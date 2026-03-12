@@ -14,17 +14,25 @@ def send_message(chat_id, text, reply_markup=None):
 def edit_message(chat_id=None, message_id=None, text=None, reply_markup=None, inline_message_id=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     payload = {"text": text, "parse_mode": "HTML"}
-    
-    # ЖАҢА: Инлайн батырма ма, әлде кәдімгі чат батырмасы ма, соны ажырату
     if inline_message_id:
         payload["inline_message_id"] = inline_message_id
     else:
         payload["chat_id"] = chat_id
         payload["message_id"] = message_id
-        
-    if reply_markup: 
+    if reply_markup: payload["reply_markup"] = reply_markup
+    requests.post(url, json=payload)
+
+# ЖАҢА ФУНКЦИЯ: Тек батырмаларды ғана өзгертеді!
+def edit_reply_markup(chat_id=None, message_id=None, reply_markup=None, inline_message_id=None):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageReplyMarkup"
+    payload = {}
+    if inline_message_id:
+        payload["inline_message_id"] = inline_message_id
+    else:
+        payload["chat_id"] = chat_id
+        payload["message_id"] = message_id
+    if reply_markup is not None:
         payload["reply_markup"] = reply_markup
-        
     requests.post(url, json=payload)
 
 def answer_callback(callback_query_id, text=None, show_alert=False):
@@ -37,7 +45,6 @@ def answer_callback(callback_query_id, text=None, show_alert=False):
 
 def answer_inline_query(inline_query_id, results, button=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
-    # ЖАҢА: cache_time: 300 (Телеграм сервері нәтижені 5 минут сақтайды, ботқа жүктеме түспейді)
     payload = {"inline_query_id": inline_query_id, "results": results, "cache_time": 300}
     if button:
         payload["button"] = button
@@ -60,7 +67,7 @@ def send_invoice(chat_id):
         "payload": "premium_30_days",
         "provider_token": "", 
         "currency": "XTR",    
-        "prices": [{"label": "Premium", "amount": 100}]
+        "prices":[{"label": "Premium", "amount": 100}]
     }
     requests.post(url, json=payload)
 
