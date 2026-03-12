@@ -105,6 +105,14 @@ def increment_usage(user_id):
         else:
             new_usage = 1
         doc_ref.set({"daily_searches": new_usage, "last_search_date": today_str}, merge=True)
+    else:
+        # ЖАҢА ҚОСЫЛҒАН БЛОК: Базада жоқ Инлайн адамдарды автоматты тіркеу
+        doc_ref.set({
+            "first_name": "Inline User",
+            "username": "hidden",
+            "daily_searches": 1,
+            "last_search_date": today_str
+        }, merge=True)
 
 def grant_premium(user_id, days=30):
     doc_ref = db.collection("users").document(str(user_id))
