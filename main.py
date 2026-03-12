@@ -29,7 +29,6 @@ def telegram_webhook(request):
             process_pre_checkout(update)
             return "OK", 200
 
-        # --- CALLBACK QUERY (БАТЫРМАЛАР) ---
         if "callback_query" in update:
             cb = update["callback_query"]
             
@@ -60,9 +59,9 @@ def telegram_webhook(request):
                 set_user_gender(user_id, gender_kz)
                 log_to_bigquery(user_id, "set_gender", gender_kz, "Профиль жаңартылды")
                 
-                answer_callback(cb["id"], text="Тамаша! Сақталды 👍")
+                answer_callback(cb["id"])
                 
-                success_text = f"Жарайды! Енді бастайық 🚀\n\nМен сенің өнімдердің халал статусын тексеретін жеке көмекшіңмін. Маған өнімнің атын жаз, суретін жібер немесе жақын маңдағы орындарды іздеп көр!"
+                success_text = f"Рақмет, сақталды! 👍\n\nЕнді бастайық 🚀\nМаған кез келген өнімнің атын жазыңыз, суретін жіберіңіз немесе жақын маңдағы халал дәмханаларды іздеп көріңіз!"
                 keyboard = {"keyboard": [[{"text": "📍 Тұрған орнымды жіберу", "request_location": True}]], "resize_keyboard": True}
                 
                 edit_message(chat_id, message_id, success_text)
@@ -94,7 +93,7 @@ def telegram_webhook(request):
             elif data == "fb:bad":
                 answer_callback(cb["id"])
                 reasons_markup = {"inline_keyboard": [[{"text": "📝 Қате ақпарат", "callback_data": "fb:reason:Қате_ақпарат"}],[{"text": "🤖 ЖИ қатесі", "callback_data": "fb:reason:ЖИ_қатесі"}],[{"text": "❌ Басқа", "callback_data": "fb:reason:Басқа"}]]}
-                edit_message(chat_id, message_id, f"{msg_text}\n\n👇 <b>Несі қате болды?</b>", reply_markup=reasons_markup, inline_message_id=inline_msg_id)
+                edit_message(chat_id, message_id, f"{msg_text}\n\n👇 <b>Нақты қандай қате кетті? Оны тез арада түзетеміз:</b>", reply_markup=reasons_markup, inline_message_id=inline_msg_id)
 
             elif data.startswith("fb:reason:"):
                 parts = data.split(":")
@@ -105,7 +104,6 @@ def telegram_webhook(request):
 
             return "OK", 200
 
-        # --- INLINE ІЗДЕУ (КӨЛЕҢКЕЛІ АДАМДАР) ---
         elif "inline_query" in update:
             inline_query_id = update["inline_query"]["id"]
             query_text = update["inline_query"]["query"].strip()
@@ -148,7 +146,6 @@ def telegram_webhook(request):
             else:
                 answer_inline_query(inline_query_id,[], button=prompt_button)
 
-        # --- ХАТТАР ЖӘНЕ СУРЕТТЕР ---
         elif "message" in update:
             msg = update["message"]
             chat_id = msg["chat"]["id"]
@@ -171,7 +168,7 @@ def telegram_webhook(request):
                     send_message(chat_id, reason, reply_markup=get_premium_keyboard())
                     return "OK", 200
                     
-                send_message(chat_id, "⏳ Күте тұршы, суретті тексеріп жатырмын...")
+                send_message(chat_id, "📷 Суретті талдап жатырмын, сәл күте тұрыңыз...")
                 photo_id = msg["photo"][-1]["file_id"]
                 image_bytes = download_photo(photo_id)
                 if image_bytes:
@@ -211,20 +208,19 @@ def telegram_webhook(request):
                         current_gender = get_user_gender(chat_id)
                         
                         if not current_gender:
-                            welcome_text = f"Сәлем, {first_name}! 👋\n\nЖақынырақ танысайық, сіздің жынысыңыз қандай?"
+                            welcome_text = f"Сәлем, {first_name}! 👋\n\nМен — кез келген өнімнің немесе дәмхананың халал екенін тез әрі нақты тексеріп беретін көмекшіңізбін.\n\nЖақынырақ танысу үшін, жынысыңызды таңдаңызшы:"
                             gender_markup = {"inline_keyboard": [[{"text": "🙎‍♂️ Ер азамат", "callback_data": "gender:male"},
                                  {"text": "🙎‍♀️ Нәзік жанды", "callback_data": "gender:female"}]
                             ]}
                             send_message(chat_id, welcome_text, reply_markup=gender_markup)
                             log_to_bigquery(chat_id, "start", "/start", "Жаңа қолданушы (Жыныс сұралды)")
                         else:
-                            welcome_text = f"Қайта оралуыңызбен, {first_name}! 👋\n\nМен сенің өнімдердің халал статусын тексеретін жеке көмекшіңмін.\nМаған өнімнің атын жаз, суретін жібер немесе жақын жердегі тамақтанатын орындарды іздеп көр!"
+                            welcome_text = f"Қайта оралуыңызбен, {first_name}! 👋\n\nМен жұмысқа дайынмын. Тексеретін өнім бар ма немесе тамақтанатын орын іздейміз бе?"
                             keyboard = {"keyboard": [[{"text": "📍 Тұрған орнымды жіберу", "request_location": True}]], "resize_keyboard": True}
                             send_message(chat_id, welcome_text, reply_markup=keyboard)
                             save_chat_history(chat_id, "model", welcome_text)
                             log_to_bigquery(chat_id, "start", "/start", "Ескі қолданушы")
                             
-                # ЖОҒАЛЫП КЕТКЕН БЛОК ҚАЙТА ОРНЫНА КЕЛДІ:
                 else:
                     found_items = search_data(text)
                     
@@ -241,7 +237,7 @@ def telegram_webhook(request):
                             log_to_bigquery(chat_id, "text_search", text, "Табылды (1)")
                             increment_usage(chat_id)
                         else:
-                            reply_text = f"🔍 <b>Міне, мен мыналарды таптым. Нақты қайсысы керек екенін төмендегі батырмадан таңдаңыз:</b>\n\n"
+                            reply_text = f"🔍 <b>Мен бірнеше нұсқа таптым. Сізге нақты қайсысы керек?</b>\n\n"
                             keyboard =[]
                             for idx, item in enumerate(found_items[:5]):
                                 if item['type'] == 'Мекеме':
@@ -258,7 +254,7 @@ def telegram_webhook(request):
                             log_to_bigquery(chat_id, "text_search", text, "Табылды (Көп)")
                             increment_usage(chat_id)
                     else:
-                        wait_msg_id = send_message(chat_id, "⏳ <i>Ойланып жатырмын...</i>")
+                        wait_msg_id = send_message(chat_id, "⏳ <i>Базадан іздеп жатырмын...</i>")
                         
                         if wait_msg_id:
                             ai_reply = chat_with_ai(chat_id, text, is_symbat, chat_id=chat_id, message_id=wait_msg_id)
