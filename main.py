@@ -27,12 +27,27 @@ def telegram_webhook(request):
             process_pre_checkout(update)
             return "OK", 200
 
+        # --- ЖАҢАРТЫЛҒАН БАТЫРМАЛАР (CALLBACK QUERY) ЛОГИКАСЫ (4-ҚАДАМ) ---
         if "callback_query" in update:
             cb = update["callback_query"]
-            chat_id = cb["message"]["chat"]["id"]
-            message_id = cb["message"]["message_id"]
+            
+            # Телеграмда БАРЛЫҚ уақытта болатын жалғыз сенімді идентификатор
+            user_id = cb["from"]["id"] 
             data = cb["data"]
-            msg_text = cb["message"].get("text", "Мәтін жоқ")
+            
+            # ЖАҢА ҚОРҒАНЫС: Бұл батырма Инлайннан басылды ма?
+            is_inline = "inline_message_id" in cb
+            
+            if is_inline:
+                chat_id = None
+                message_id = None
+                inline_msg_id = cb["inline_message_id"]
+                msg_text = "Инлайн нәтиже" # Инлайннан мәтінді оқу мүмкін емес
+            else:
+                chat_id = cb["message"]["chat"]["id"]
+                message_id = cb["message"]["message_id"]
+                inline_msg_id = None
+                msg_text = cb["message"].get("text", "Мәтін жоқ")
             
             if data == "buy_premium":
                 answer_callback(cb["id"])
@@ -58,31 +73,41 @@ def telegram_webhook(request):
 
             elif data == "fb:good":
                 answer_callback(cb["id"], text="Пікіріңізге рақмет! ❤️")
-                log_to_bigquery(chat_id, "feedback", "👍 Пайдалы", "Кері байланыс")
-                edit_message(chat_id, message_id, f"{msg_text}\n\n<i>(Пікір: 👍 Пайдалы)</i>")
+                log_to_bigquery(user_id, "feedback", "👍 Пайдалы", "Кері байланыс")
+                edit_message(chat_id, message_id, f"{msg_text}\n\n<i>(Пікір: 👍 Пайдалы)</i>", inline_message_id=inline_msg_id)
 
             elif data == "fb:bad":
                 answer_callback(cb["id"])
                 reasons_markup = {"inline_keyboard": [[{"text": "📝 Қате ақпарат", "callback_data": "fb:reason:Қате_ақпарат"}],[{"text": "🤖 ЖИ қатесі", "callback_data": "fb:reason:ЖИ_қатесі"}],[{"text": "❌ Басқа", "callback_data": "fb:reason:Басқа"}]]}
-                edit_message(chat_id, message_id, f"{msg_text}\n\n👇 <b>Несі қате болды?</b>", reasons_markup)
+                edit_message(chat_id, message_id, f"{msg_text}\n\n👇 <b>Несі қате болды?</b>", reply_markup=reasons_markup, inline_message_id=inline_msg_id)
 
             elif data.startswith("fb:reason:"):
                 parts = data.split(":")
                 reason = parts[2]
                 answer_callback(cb["id"], text="Рақмет! Түзетеміз 🛠")
-                log_to_bigquery(chat_id, "feedback", f"👎 Қате ({reason})", "Кері байланыс")
-                edit_message(chat_id, message_id, f"{msg_text}\n\n<i>(Пікір: 👎 {reason})</i>")
+                log_to_bigquery(user_id, "feedback", f"👎 Қате ({reason})", "Кері байланыс")
+                edit_message(chat_id, message_id, f"{msg_text}\n\n<i>(Пікір: 👎 {reason})</i>", inline_message_id=inline_msg_id)
 
             return "OK", 200
 
-        # --- ЖАҢАРТЫЛҒАН ӘДЕМІ ЖӘНЕ ЖЫЛДАМ INLINE ІЗДЕУ ---
+        # --- ЖАҢАРТЫЛҒАН INLINE ІЗДЕУ ЛОГИКАСЫ (2-ҚАДАМ) ---
         elif "inline_query" in update:
             inline_query_id = update["inline_query"]["id"]
             query_text = update["inline_query"]["query"].strip()
+            
+            # ЖАҢА: Адамның ID-ін ұстап алу
+            user_info = update["inline_query"]["from"]
+            user_id = user_info["id"]
+            
             prompt_button = {"text": "🔍 Өнім немесе мекеме атауын жазыңыз...", "start_parameter": "search_help"}
             
-            # ЖАҢА: Тек 3 әріптен асқанда ғана іздеуді бастайды!
             if len(query_text) >= 3:
+                # ЖАҢА: Лимитті тексеру
+                has_access, reason = check_access(user_id, user_id == SYMBAT_ID)
+                if not has_access:
+                    answer_inline_query(inline_query_id,[], button={"text": "⚠️ Лимит бітті! Premium алу үшін басыңыз", "start_parameter": "buy_premium"})
+                    return "OK", 200
+                
                 found_items = search_data(query_text)
                 tg_results =[]
                 for item in found_items:
@@ -106,7 +131,9 @@ def telegram_webhook(request):
                         "reply_markup": markup
                     })
                 answer_inline_query(inline_query_id, tg_results, button=prompt_button)
-                # ЕСКЕРТУ: BigQuery логикасы инлайннан алынып тасталды (Жылдамдық үшін!)
+                
+                # ЖАҢА: Іздегеннен кейін көлеңкелі адамның лимитін шегеру
+                increment_usage(user_id)
             else:
                 answer_inline_query(inline_query_id,[], button=prompt_button)
 
