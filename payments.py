@@ -3,8 +3,7 @@ from db_core import grant_premium, record_payment, log_to_bigquery
 
 def get_premium_keyboard():
     return {
-        "inline_keyboard": [[{"text": "⭐️ Premium алу (100 ⭐️)", "callback_data": "buy_premium"}]
-        ]
+        "inline_keyboard": [[{"text": "⭐️ Premium алу (100 ⭐️)", "callback_data": "buy_premium"}]]
     }
 
 def handle_buy_premium_callback(chat_id, callback_id):
@@ -32,4 +31,5 @@ def process_successful_payment(message):
         "Сіз енді <b>Premium</b> қолданушысыз 👑\n"
         "Алдағы 30 күн бойы барлық шектеулер алынып тасталды. Жобамызды қолдағаныңыз үшін үлкен рақмет! ❤️"
     )
-    send_message(chat_id, success_text)
+    # ЖАҢА: Төлем сәтті өткенде Шашу эффектісі қосылады
+    send_message(chat_id, success_text, message_effect_id="5046509860389126442")
