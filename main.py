@@ -1,7 +1,9 @@
 import functions_framework
 import uuid
 from bot_sender import send_message, edit_message, answer_callback, answer_inline_query, download_photo
-from db_core import add_user, save_chat_history, log_to_bigquery, get_item_by_id, check_access, increment_usage, revoke_premium, clear_cache
+from db_core import (add_user, save_chat_history, log_to_bigquery, get_item_by_id, 
+                     check_access, increment_usage, revoke_premium, clear_cache, 
+                     get_user_gender, set_user_gender)
 from search_logic import search_data, get_nearby_companies
 from formatters import format_detail_message
 from updater import update_database
@@ -27,22 +29,20 @@ def telegram_webhook(request):
             process_pre_checkout(update)
             return "OK", 200
 
-        # --- ЖАҢАРТЫЛҒАН БАТЫРМАЛАР (CALLBACK QUERY) ЛОГИКАСЫ (4-ҚАДАМ) ---
+        # --- CALLBACK QUERY (БАТЫРМАЛАР) ---
         if "callback_query" in update:
             cb = update["callback_query"]
             
-            # Телеграмда БАРЛЫҚ уақытта болатын жалғыз сенімді идентификатор
             user_id = cb["from"]["id"] 
             data = cb["data"]
             
-            # ЖАҢА ҚОРҒАНЫС: Бұл батырма Инлайннан басылды ма?
             is_inline = "inline_message_id" in cb
             
             if is_inline:
                 chat_id = None
                 message_id = None
                 inline_msg_id = cb["inline_message_id"]
-                msg_text = "Инлайн нәтиже" # Инлайннан мәтінді оқу мүмкін емес
+                msg_text = "Инлайн нәтиже" 
             else:
                 chat_id = cb["message"]["chat"]["id"]
                 message_id = cb["message"]["message_id"]
@@ -52,7 +52,22 @@ def telegram_webhook(request):
             if data == "buy_premium":
                 answer_callback(cb["id"])
                 handle_buy_premium_callback(chat_id, cb["id"])
+
+            elif data.startswith("gender:"):
+                gender_val = data.split(":")[1]
+                gender_kz = "Ер" if gender_val == "male" else "Әйел"
                 
+                set_user_gender(user_id, gender_kz)
+                log_to_bigquery(user_id, "set_gender", gender_kz, "Профиль жаңартылды")
+                
+                answer_callback(cb["id"], text="Тамаша! Сақталды 👍")
+                
+                success_text = f"Жарайды! Енді бастайық 🚀\n\nМен сенің өнімдердің халал статусын тексеретін жеке көмекшіңмін. Маған өнімнің атын жаз, суретін жібер немесе жақын маңдағы орындарды іздеп көр!"
+                keyboard = {"keyboard": [[{"text": "📍 Тұрған орнымды жіберу", "request_location": True}]], "resize_keyboard": True}
+                
+                edit_message(chat_id, message_id, success_text)
+                send_message(chat_id, "Төмендегі батырма арқылы локация жібере аласыз 👇", reply_markup=keyboard)
+                    
             elif data.startswith("loc:"):
                 answer_callback(cb["id"])
                 parts = data.split(":")
@@ -90,19 +105,17 @@ def telegram_webhook(request):
 
             return "OK", 200
 
-        # --- ЖАҢАРТЫЛҒАН INLINE ІЗДЕУ ЛОГИКАСЫ (2-ҚАДАМ) ---
+        # --- INLINE ІЗДЕУ (КӨЛЕҢКЕЛІ АДАМДАР) ---
         elif "inline_query" in update:
             inline_query_id = update["inline_query"]["id"]
             query_text = update["inline_query"]["query"].strip()
             
-            # ЖАҢА: Адамның ID-ін ұстап алу
             user_info = update["inline_query"]["from"]
             user_id = user_info["id"]
             
             prompt_button = {"text": "🔍 Өнім немесе мекеме атауын жазыңыз...", "start_parameter": "search_help"}
             
             if len(query_text) >= 3:
-                # ЖАҢА: Лимитті тексеру
                 has_access, reason = check_access(user_id, user_id == SYMBAT_ID)
                 if not has_access:
                     answer_inline_query(inline_query_id,[], button={"text": "⚠️ Лимит бітті! Premium алу үшін басыңыз", "start_parameter": "buy_premium"})
@@ -131,8 +144,6 @@ def telegram_webhook(request):
                         "reply_markup": markup
                     })
                 answer_inline_query(inline_query_id, tg_results, button=prompt_button)
-                
-                # ЖАҢА: Іздегеннен кейін көлеңкелі адамның лимитін шегеру
                 increment_usage(user_id)
             else:
                 answer_inline_query(inline_query_id,[], button=prompt_button)
@@ -189,15 +200,31 @@ def telegram_webhook(request):
 
                 if text == "/start":
                     add_user(chat_id, first_name, username)
+                    
                     if is_symbat:
                         welcome_text = f"Сәлем, Ботам! ❤️\n\nБұл сенің сүйікті жігітің жасаған ҚМДБ Халал боты ғой. Маған кез келген өнімнің атын жаз немесе суретін жібер, мен сен үшін бәрін тауып беремін! 😘"
+                        keyboard = {"keyboard": [[{"text": "📍 Тұрған орнымды жіберу", "request_location": True}]], "resize_keyboard": True}
+                        send_message(chat_id, welcome_text, reply_markup=keyboard)
+                        save_chat_history(chat_id, "model", welcome_text)
+                        log_to_bigquery(chat_id, "start", "/start", "Сымбат кірді")
                     else:
-                        welcome_text = f"Сәлем, {first_name}! 👋\n\nМен сенің өнімдердің халал статусын тексеретін жеке көмекшіңмін.\nМаған өнімнің атын жаз, суретін жібер немесе жақын жердегі тамақтанатын орындарды іздеп көр!"
-                    keyboard = {"keyboard": [[{"text": "📍 Тұрған орнымды жіберу", "request_location": True}]], "resize_keyboard": True}
-                    send_message(chat_id, welcome_text, reply_markup=keyboard)
-                    save_chat_history(chat_id, "model", welcome_text)
-                    log_to_bigquery(chat_id, "start", "/start", "Жаңа қолданушы")
-
+                        current_gender = get_user_gender(chat_id)
+                        
+                        if not current_gender:
+                            welcome_text = f"Сәлем, {first_name}! 👋\n\nЖақынырақ танысайық, сіздің жынысыңыз қандай?"
+                            gender_markup = {"inline_keyboard": [[{"text": "🙎‍♂️ Ер азамат", "callback_data": "gender:male"},
+                                 {"text": "🙎‍♀️ Нәзік жанды", "callback_data": "gender:female"}]
+                            ]}
+                            send_message(chat_id, welcome_text, reply_markup=gender_markup)
+                            log_to_bigquery(chat_id, "start", "/start", "Жаңа қолданушы (Жыныс сұралды)")
+                        else:
+                            welcome_text = f"Қайта оралуыңызбен, {first_name}! 👋\n\nМен сенің өнімдердің халал статусын тексеретін жеке көмекшіңмін.\nМаған өнімнің атын жаз, суретін жібер немесе жақын жердегі тамақтанатын орындарды іздеп көр!"
+                            keyboard = {"keyboard": [[{"text": "📍 Тұрған орнымды жіберу", "request_location": True}]], "resize_keyboard": True}
+                            send_message(chat_id, welcome_text, reply_markup=keyboard)
+                            save_chat_history(chat_id, "model", welcome_text)
+                            log_to_bigquery(chat_id, "start", "/start", "Ескі қолданушы")
+                            
+                # ЖОҒАЛЫП КЕТКЕН БЛОК ҚАЙТА ОРНЫНА КЕЛДІ:
                 else:
                     found_items = search_data(text)
                     
