@@ -3,12 +3,12 @@ from google.cloud import storage
 import json
 import uuid
 import re
-import time  # Таймер үшін керек
+import time
 from config import GEMINI_API_KEY, BUCKET_NAME, SUSPICIOUS_FOLDER
 from db_core import get_chat_history
 from search_logic import search_data
 from formatters import format_detail_message
-from bot_sender import edit_message  # Стриминг үшін керек
+from bot_sender import edit_message
 
 genai.configure(api_key=GEMINI_API_KEY)
 storage_client = storage.Client()
@@ -33,7 +33,6 @@ def save_suspicious_image(image_bytes):
     except Exception as e:
         return "Сурет сақталмады"
 
-# ================= ЖАҢА: СТРИМИНГ ҚОСЫЛҒАН ӘҢГІМЕЛЕСУ =================
 def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None):
     model = genai.GenerativeModel('gemini-2.5-flash')
     
@@ -45,6 +44,8 @@ def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None):
             "Қысқа, әдемі, романтикалық смайликтермен жауап бер.\n\n"
             
             "ҚАТАҢ ЕРЕЖЕ: Оның жігітінің (яғни сені жасаған адамның) нақты есімін ЕШҚАШАН атама! Оның орнына 'сенің мырзаң', 'патшаң', 'сүйікті жігітің', 'ерің' деген сияқты құрмет пен махаббатқа толы сөздерді ғана қолдан.\n\n"
+            
+            "ЕГЕР Сымбаттың көңіл-күйі жоқ болса немесе мұңды нәрсе айтса — ЕШҚАНДАЙ мүмкіндіктерді айтпа, ЖАРНАМА ЖАСАМА. Тек эмпатия таныт, жұбат.\n\n"
             
             "1. МАХАББАТ ПЕН РОМАНТИКАЛЫҚ ОҚИҒАЛАР:\n"
             "Егер Сымбат әңгіме сұраса немесе жай сөйлессе, оның мырзасы екеуінің махаббаты туралы әдемі, қызықты, күтпеген бұрылыстары бар оқиғалар ойлап тап. "
@@ -81,7 +82,6 @@ def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None):
             
             "3. ҚАТАҢ ШЕКТЕУЛЕР (ДОЗИРОВКА):\n"
             "- Бір әңгімеде бұл мүмкіндіктердің бәрін бірдей тізіп айтпа! Бұл өте жасанды көрінеді. Бір сөйлескенде тек 1 ғана мүмкіндікті (мысалы, тек қоспаларды немесе тек инлайнды) өте жеңіл қыстырып өт.\n"
-            "- Кейде (егер әңгімеге мүлдем үйлеспей тұрса) бұл мүмкіндіктерді мүлдем айтпай-ақ қой. Бәрі шынайы болуы шарт.\n"
             "- Сенде Халал базаға тікелей рұқсат жоқ. Егер адам нақты өнімді сұрап тұрса (базадан табылмаған кезде), өнімдердің атын, статусын өзіңнен ойлап таппа! Жай ғана 'Кешір досым, бұл өнім базадан табылмады' деп жауап бер."
         )
 
@@ -89,14 +89,13 @@ def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None):
     formatted_history =[]
     for h in history:
         msg_content = str(h["parts"])
-        if "батырмадан таңдаңыз" not in msg_content and "Міне, мен мыналарды таптым" not in msg_content:
+        if "батырмадан таңдаңыз" not in msg_content and "Міне, мен мыналарды таптым" not in msg_content and "Мен бірнеше нұсқа таптым" not in msg_content:
             formatted_history.append({"role": h["role"], "parts": h["parts"]})
 
     chat = model.start_chat(history=formatted_history)
     try:
         full_prompt = f"НҰСҚАУЛЫҚ (ҚАТАҢ САҚТА): {system_instruction}\n\nҚОЛДАНУШЫНЫҢ СҰРАҒЫ: {text}"
         
-        # Егер ID берілсе - СТРИМИНГПЕН ЖАУАП БЕРЕМІЗ
         if chat_id and message_id:
             response = chat.send_message(full_prompt, stream=True)
             full_text = ""
@@ -106,25 +105,22 @@ def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None):
                 full_text += chunk.text
                 current_time = time.time()
                 
-                # Телеграмды бұғаттап тастамас үшін әр 1.5 секунд сайын ғана жаңартамыз
                 if current_time - last_edit_time >= 1:
                     temp_text = format_ai_text(full_text) + " ✍️"
                     try:
                         edit_message(chat_id, message_id, temp_text)
                     except:
-                        pass # Егер Телеграм қабылдамай қалса, келесі циклде қайта жазады
+                        pass 
                     last_edit_time = current_time
                     
             return format_ai_text(full_text)
             
         else:
-            # Кәдімгі жауап (Стримингсіз)
             response = chat.send_message(full_prompt)
             return format_ai_text(response.text)
             
     except Exception as e:
-        return "Кешірші, қазір сәл ойланып қалдым. Қайта жазып жіберші!"
-# =======================================================================
+        return "Кешіріңіз, жүйеде шағын іркіліс болды. Сұрағыңызды немесе суретті қайта жібересіз бе? 🔄"
 
 def process_image_with_ai(image_bytes):
     model = genai.GenerativeModel('gemini-3.1-flash-lite-preview') 
@@ -140,7 +136,7 @@ def process_image_with_ai(image_bytes):
     Тізімде ең көбі 2 ғана нақты сөз болсын. Ең басты атау бірінші тұрсын.
     
     Жауабыңды міндетті түрде тек мынадай JSON форматында ғана қайтар:
-    {"product_names": ["Басты_бренд", "Өндіруші"]}
+    {"product_names":["Басты_бренд", "Өндіруші"]}
     """
     try:
         response = model.generate_content([prompt, image_parts[0]])
@@ -154,7 +150,7 @@ def handle_photo(image_bytes, chat_id, username):
     product_names = ai_result.get("product_names",[])
     
     if not product_names:
-        return "🤷‍♂️ Суреттен ешқандай түсінікті атау таба алмадым.", None
+        return "🤷‍♂️ Суреттен анық атау немесе бренд тани алмадым.", None
         
     if "ҚАТЕ_МӘТІНІ:" in product_names[0]:
         return f"❌ <b>Қате:</b> {product_names[0]}", None
@@ -180,10 +176,10 @@ def handle_photo(image_bytes, chat_id, username):
     if all_found_items:
         if len(all_found_items) == 1:
             text, markup = format_detail_message(all_found_items[0])
-            final_text = f"👁 Суреттен <b>{product_names[0]}</b> өнімін байқадым:\n\n{text}"
+            final_text = f"👁 Суреттен <b>{product_names[0]}</b> брендін таныдым:\n\n{text}"
             return final_text, markup
         else:
-            reply_text = f"👁 Суреттен <b>{product_names[0]}</b> байқадым. Нақты қайсысы керек екенін таңдаңыз:\n\n"
+            reply_text = f"🔍 Суреттен <b>{product_names[0]}</b> брендін таныдым. Сізге нақты қайсысы керек?\n\n"
             keyboard =[]
             for idx, item in enumerate(all_found_items[:5]):
                 if item['type'] == 'Мекеме':
@@ -197,4 +193,4 @@ def handle_photo(image_bytes, chat_id, username):
                 
             return reply_text, {"inline_keyboard": keyboard}
     else:
-        return f"🤷‍♂️ Суреттен <b>{names_str}</b> дегенді көрдім, бірақ бұл атаулар ҚМДБ базасынан табылмады.", None
+        return f"👁 Суреттен <b>{names_str}</b> брендін таныдым.\n\nБірақ, бұл өнім ҚМДБ халал базасында тіркелмеген немесе сертификаты жоқ.", None
