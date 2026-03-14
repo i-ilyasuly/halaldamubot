@@ -1,4 +1,4 @@
-from bot_sender import send_message, edit_message, edit_reply_markup, answer_callback
+from bot_sender import send_message, edit_message, edit_reply_markup, answer_callback, set_message_reaction
 from db_core import set_user_gender, log_to_bigquery, get_item_by_id, check_access
 from search_logic import get_nearby_companies
 from formatters import format_detail_message
@@ -56,13 +56,25 @@ def handle_callback(cb):
         if item:
             text, markup = format_detail_message(item)
             has_access, tier = check_access(user_id, user_id == SYMBAT_ID)
+            
             effect = None
-            if tier in ["premium", "VIP"]:
+            reaction = None
+            
+            if tier in["premium", "VIP"]:
                 status_text = item.get("status", "")
-                if "Белсенді" in status_text or "Рұқсат" in status_text: effect = EFFECT_HALAL
-                elif "Мерзімі" in status_text or "⚠️" in status_text or "🚫" in status_text or "Қайтарып" in status_text: effect = EFFECT_EXPIRED
+                if "Белсенді" in status_text or "Рұқсат" in status_text: 
+                    effect = EFFECT_HALAL
+                    reaction = "🎉"
+                elif "Мерзімі" in status_text or "⚠️" in status_text or "🚫" in status_text or "Қайтарып" in status_text: 
+                    effect = EFFECT_EXPIRED
+                    reaction = "👎"
 
-            send_message(chat_id, text, reply_markup=markup, message_effect_id=effect)
+            bot_msg_id = send_message(chat_id, text, reply_markup=markup, message_effect_id=effect)
+            
+            # ЖАҢА: Тізімнен батырма басқан кезде шыққан ЖАҢА хатқа реакция қою
+            if reaction and bot_msg_id:
+                set_message_reaction(chat_id, bot_msg_id, reaction)
+                
         else:
             answer_callback(cb["id"], text="Мәлімет табылмады 😔", show_alert=True)
 
