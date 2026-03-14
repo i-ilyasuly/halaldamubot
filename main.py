@@ -7,7 +7,7 @@ from payments import process_pre_checkout
 # Жаңа модульдерді шақыру
 from handlers_callback import handle_callback
 from handlers_inline import handle_inline
-from handlers_message import handle_message
+from handlers_message import handle_message 
 
 @functions_framework.http
 def telegram_webhook(request):
