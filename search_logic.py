@@ -105,11 +105,13 @@ def get_nearby_companies(user_lat, user_lon, page=1):
         
         text += f"{icon} <b>{idx}. «{clean_title}»</b>\n   🏷 {item['category']}\n   📍 {item['address']}\n   📏 {dist_str}\n   📊 {st}{date_str}\n\n"
         
-        inline_keyboard.append([{"text": f"🗺️ {idx}. «{clean_title}»", "url": item['link']}])
+        # ЖАҢА: Сертификатқа қарап батырма түсін анықтаймыз (Жасыл немесе Қызыл)
+        btn_style = "success" if "Белсенді" in st else "danger"
+        inline_keyboard.append([{"text": f"🗺️ {idx}. «{clean_title}»", "url": item['link'], "style": btn_style}])
         
     nav_buttons =[]
-    if page > 1: nav_buttons.append({"text": "⬅️ Артқа", "callback_data": f"loc:{page-1}:{round(user_lat,4)}:{round(user_lon,4)}"})
-    if page < total_pages: nav_buttons.append({"text": "Келесі ➡️", "callback_data": f"loc:{page+1}:{round(user_lat,4)}:{round(user_lon,4)}"})
+    if page > 1: nav_buttons.append({"text": "⬅️ Артқа", "callback_data": f"loc:{page-1}:{round(user_lat,4)}:{round(user_lon,4)}", "style": "primary"})
+    if page < total_pages: nav_buttons.append({"text": "Келесі ➡️", "callback_data": f"loc:{page+1}:{round(user_lat,4)}:{round(user_lon,4)}", "style": "primary"})
     if nav_buttons: inline_keyboard.append(nav_buttons)
         
     return text, {"inline_keyboard": inline_keyboard}
