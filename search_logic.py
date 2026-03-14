@@ -69,7 +69,7 @@ def get_nearby_companies(user_lat, user_lon, page=1):
     if total_items == 0:
         return "😔 Өкінішке орай, 50 км радиуста сертификаты бар халал орындар табылмады. Басқа аумақты тексеріп көресіз бе?", None
         
-    per_page = 5
+    per_page = 3
     total_pages = math.ceil(total_items / per_page)
     if page > total_pages: page = 1
     start_idx = (page - 1) * per_page
