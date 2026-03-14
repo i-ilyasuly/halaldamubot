@@ -1,4 +1,5 @@
-from bot_sender import send_message, edit_message, send_chat_action, delete_message, download_photo, set_message_reaction
+import random
+from bot_sender import send_message, edit_message, send_chat_action, download_photo, set_message_reaction
 from db_core import (add_user, save_chat_history, log_to_bigquery, check_access, 
                      increment_usage, revoke_premium, get_user_gender)
 from search_logic import search_data, get_nearby_companies
@@ -34,7 +35,11 @@ def handle_message(msg):
             return
         
         send_chat_action(chat_id, "typing")
-        wait_msg_id = send_message(chat_id, "🔬", reply_to_message_id=user_msg_id)
+        
+        # ЖАҢА: Сурет жіберген бойда кездейсоқ "загрузка" реакциясы қойылады
+        if tier in ["premium", "VIP"]:
+            loading_reaction = random.choice(["🤔", "👀", "⚡", "🤓", "👨‍💻"])
+            set_message_reaction(chat_id, user_msg_id, loading_reaction)
             
         photo_id = msg["photo"][-1]["file_id"]
         image_bytes = download_photo(photo_id)
@@ -43,7 +48,7 @@ def handle_message(msg):
             
             effect = None
             reaction = None
-            if tier in["premium", "VIP"]:
+            if tier in ["premium", "VIP"]:
                 if "✅" in result_msg: 
                     effect = EFFECT_HALAL
                     reaction = "🎉"
@@ -53,17 +58,11 @@ def handle_message(msg):
                 else:
                     reaction = "🤔"
             
-            # БОТТЫҢ ХАТЫНЫҢ ID-ІН ҰСТАП АЛУ
             bot_msg_id = send_message(chat_id, result_msg, reply_markup=markup, message_effect_id=effect, reply_to_message_id=user_msg_id)
             
-            # ЕКІ ЖАҚҚА ДА РЕАКЦИЯ ҚОЮ
-            if reaction:
-                set_message_reaction(chat_id, user_msg_id, reaction) # Пайдаланушы хатына
-                if bot_msg_id:
-                    set_message_reaction(chat_id, bot_msg_id, reaction) # Боттың өз хатына
-            
-            if wait_msg_id:
-                delete_message(chat_id, wait_msg_id)
+            # ЖАҢА: Тек боттың ӨЗ жауабына ғана реакция қойылады
+            if reaction and bot_msg_id:
+                set_message_reaction(chat_id, bot_msg_id, reaction) 
                 
             save_chat_history(chat_id, "user", "Мен саған бір сурет жібердім")
             save_chat_history(chat_id, "model", result_msg)
@@ -83,9 +82,7 @@ def handle_message(msg):
         
         bot_msg_id = send_message(chat_id, text, reply_markup=markup, reply_to_message_id=user_msg_id)
         
-        # ЕКІ ЖАҚҚА ДА РЕАКЦИЯ ҚОЮ
         if tier in["premium", "VIP"]:
-            set_message_reaction(chat_id, user_msg_id, "⚡")
             if bot_msg_id:
                 set_message_reaction(chat_id, bot_msg_id, "⚡")
             
@@ -103,7 +100,6 @@ def handle_message(msg):
                 keyboard = {"keyboard": [[{"text": "📍 Тұрған орнымды жіберу", "request_location": True}]], "resize_keyboard": True}
                 bot_msg_id = send_message(chat_id, welcome_text, reply_markup=keyboard, reply_to_message_id=user_msg_id)
                 
-                # ЕКІ ЖАҚҚА ДА РЕАКЦИЯ ҚОЮ
                 set_message_reaction(chat_id, user_msg_id, "❤")
                 if bot_msg_id:
                     set_message_reaction(chat_id, bot_msg_id, "❤")
@@ -149,7 +145,7 @@ def handle_message(msg):
                     
                     effect = None
                     reaction = None
-                    if tier in["premium", "VIP"]:
+                    if tier in ["premium", "VIP"]:
                         status_text = found_items[0].get("status", "")
                         if "Белсенді" in status_text or "Рұқсат" in status_text: 
                             effect = EFFECT_HALAL
@@ -160,11 +156,9 @@ def handle_message(msg):
                             
                     bot_msg_id = send_message(chat_id, reply_text, reply_markup=markup, message_effect_id=effect, reply_to_message_id=user_msg_id)
                     
-                    # ЕКІ ЖАҚҚА ДА РЕАКЦИЯ ҚОЮ
-                    if reaction:
-                        set_message_reaction(chat_id, user_msg_id, reaction)
-                        if bot_msg_id:
-                            set_message_reaction(chat_id, bot_msg_id, reaction)
+                    # ЖАҢА: Пайдаланушының хатына ешқандай реакция жоқ (Шум болмас үшін). Тек боттың жауабына қойылады!
+                    if reaction and bot_msg_id:
+                        set_message_reaction(chat_id, bot_msg_id, reaction)
                     
                     save_chat_history(chat_id, "user", text)
                     save_chat_history(chat_id, "model", reply_text)
@@ -172,7 +166,7 @@ def handle_message(msg):
                     increment_usage(chat_id)
                 else:
                     reply_text = f"🔍 <b>Мен бірнеше нұсқа таптым. Сізге нақты қайсысы керек?</b>\n\n"
-                    keyboard =[]
+                    keyboard = []
                     for idx, item in enumerate(found_items[:5]):
                         if item['type'] == 'Мекеме':
                             desc_text = f"📍 {item.get('address', '')}"
@@ -185,11 +179,9 @@ def handle_message(msg):
                         
                     bot_msg_id = send_message(chat_id, reply_text, reply_markup={"inline_keyboard": keyboard}, reply_to_message_id=user_msg_id)
                     
-                    # Көп нұсқа табылғанда "Көз" реакциясы екі жаққа да
-                    if tier in["premium", "VIP"]:
-                        set_message_reaction(chat_id, user_msg_id, "👀")
-                        if bot_msg_id:
-                            set_message_reaction(chat_id, bot_msg_id, "👀")
+                    # ЖАҢА: Көп нұсқа табылғанда боттың хатына "Ойлану" (сұрау) белгісі
+                    if tier in ["premium", "VIP"] and bot_msg_id:
+                        set_message_reaction(chat_id, bot_msg_id, "🤔")
                     
                     save_chat_history(chat_id, "user", text)
                     save_chat_history(chat_id, "model", reply_text)
@@ -199,24 +191,20 @@ def handle_message(msg):
                 _, tier = check_access(chat_id, is_symbat)
                 
                 send_chat_action(chat_id, "typing")
-                wait_msg_id = send_message(chat_id, "✨", reply_to_message_id=user_msg_id)
                 
-                if wait_msg_id:
-                    ai_reply = chat_with_ai(chat_id, text, is_symbat, chat_id=chat_id, message_id=wait_msg_id)
-                    keys = {"inline_keyboard": [[{"text": "👍 Пайдалы", "callback_data": "fb:good:ai"}, {"text": "👎 Қате", "callback_data": "fb:bad:ai"}]]}
-                    
-                    edit_message(chat_id, wait_msg_id, ai_reply, reply_markup=keys)
-                else:
-                    ai_reply = chat_with_ai(chat_id, text, is_symbat)
-                    keys = {"inline_keyboard": [[{"text": "👍 Пайдалы", "callback_data": "fb:good:ai"}, {"text": "👎 Қате", "callback_data": "fb:bad:ai"}]]}
-                    
-                    wait_msg_id = send_message(chat_id, ai_reply, reply_markup=keys, reply_to_message_id=user_msg_id)
+                # ЖАҢА: ЖИ іске қосылғанда адамның хатына бірден "Жазып жатырмын" реакциясы түседі
+                if tier in ["premium", "VIP"]:
+                    ai_loading_reaction = random.choice(["✍", "👨‍💻"])
+                    set_message_reaction(chat_id, user_msg_id, ai_loading_reaction)
                 
-                # ЖИ жауабына "Ойлану" реакциясы екі жаққа да
-                if tier in["premium", "VIP"]:
-                    set_message_reaction(chat_id, user_msg_id, "🤔")
-                    if wait_msg_id:
-                        set_message_reaction(chat_id, wait_msg_id, "🤔")
+                # Стриминг хаты алынып тасталды. ЖИ бірден толық жауап қайтарады
+                ai_reply = chat_with_ai(chat_id, text, is_symbat)
+                keys = {"inline_keyboard": [[{"text": "👍 Пайдалы", "callback_data": "fb:good:ai"}, {"text": "👎 Қате", "callback_data": "fb:bad:ai"}]]}
+                
+                bot_msg_id = send_message(chat_id, ai_reply, reply_markup=keys, reply_to_message_id=user_msg_id)
+                
+                if tier in ["premium", "VIP"] and bot_msg_id:
+                    set_message_reaction(chat_id, bot_msg_id, "🤔")
                     
                 save_chat_history(chat_id, "user", text)    
                 save_chat_history(chat_id, "model", ai_reply)
