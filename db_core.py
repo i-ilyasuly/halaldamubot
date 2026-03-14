@@ -1,6 +1,8 @@
 from google.cloud import firestore, bigquery
 from datetime import datetime, timedelta, timezone
 from formatters import format_item_dict
+import string
+import random
 
 db = firestore.Client()
 bq_client = bigquery.Client()
@@ -135,3 +137,37 @@ def get_user_gender(user_id):
 
 def set_user_gender(user_id, gender):
     db.collection("users").document(str(user_id)).set({"gender": gender}, merge=True)
+
+def create_gift_code(buyer_id, buyer_name):
+    """Сыйлық кодын генерациялап, draft_gifts базасына сақтайды"""
+    # Мысалы: gift_A7B29F деген кездейсоқ код жасайды
+    code = "gift_" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    
+    db.collection("draft_gifts").document(code).set({
+        "buyer_id": str(buyer_id),
+        "buyer_name": buyer_name,
+        "status": "active",
+        "created_at": firestore.SERVER_TIMESTAMP
+    })
+    return code
+
+def redeem_gift_code(code, user_id):
+    """Сыйлық кодын қолдану (Premium беру)"""
+    doc_ref = db.collection("draft_gifts").document(code)
+    doc = doc_ref.get()
+    
+    if doc.exists:
+        data = doc.to_dict()
+        if data.get("status") == "active":
+            # Кодты "қолданылды" деп жабамыз
+            doc_ref.set({
+                "status": "used", 
+                "used_by": str(user_id), 
+                "used_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+            
+            # Адамға 30 күн Premium береміз
+            grant_premium(user_id, days=30)
+            return True, data.get("buyer_name", "Жасырын адам")
+            
+    return False, None
