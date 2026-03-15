@@ -1,7 +1,6 @@
 import requests
 from config import BOT_TOKEN
 
-# ЖАҢА: reply_to_message_id аргументі қосылды
 def send_message(chat_id, text, reply_markup=None, message_effect_id=None, reply_to_message_id=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -12,7 +11,6 @@ def send_message(chat_id, text, reply_markup=None, message_effect_id=None, reply
     if message_effect_id: 
         payload["message_effect_id"] = str(message_effect_id)
         
-    # ЖАҢА: Телеграмның заманауи Reply форматы
     if reply_to_message_id:
         payload["reply_parameters"] = {"message_id": reply_to_message_id}
     
@@ -107,28 +105,31 @@ def delete_message(chat_id, message_id):
     payload = {"chat_id": chat_id, "message_id": message_id}
     requests.post(url, json=payload)
 
-# ЖАҢА ФУНКЦИЯ: Хатқа реакция қою
 def set_message_reaction(chat_id, message_id, emoji, is_big=True):
-    """
-    Пайдаланушының хатына смайлик-реакция қояды.
-    is_big=True болса, смайлик экранда үлкен болып анимацияланады (Premium әсері).
-    """
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMessageReaction"
     payload = {
         "chat_id": chat_id,
         "message_id": message_id,
-        "reaction": [{"type": "emoji", "emoji": emoji}],
+        "reaction":[{"type": "emoji", "emoji": emoji}],
         "is_big": is_big
     }
     requests.post(url, json=payload)
 
-def send_gift_invoice(chat_id):
+# ЖАҢА: Сыйлық сатып алуға арналған шот (Invoice) + gift_type параметрі қосылды
+def send_gift_invoice(chat_id, gift_type):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
+    
+    # Егер инлайн болса, сипаттамасын сәл өзгертеміз
+    desc = "Төлем жасалғаннан кейін сізге арнайы сыйлық сілтемесі беріледі. Соны досыңызға жібересіз."
+    if gift_type == "inline":
+        desc = "Төлем жасалғаннан кейін сіз сыйлықты досыңыздың чатына тікелей (инлайн қорап қылып) жібере аласыз."
+        
     payload = {
         "chat_id": chat_id,
         "title": "🎁 Premium Сыйлық (30 күн)",
-        "description": "Досыңызға немесе жақыныңызға шексіз іздеу мүмкіндігін сыйлаңыз! Төлем жасалғаннан кейін сізге арнайы сыйлық сілтемесі беріледі.",
-        "payload": "gift_premium_30_days", # PAYLOAD өте маңызды!
+        "description": desc,
+        # ОСЫ ЖЕРДЕГІ PAYLOAD МАҢЫЗДЫ: 'gift_premium_30_days_link' немесе 'gift_premium_30_days_inline' болып кетеді
+        "payload": f"gift_premium_30_days_{gift_type}", 
         "provider_token": "", 
         "currency": "XTR",    
         "prices":[{"label": "Premium Сыйлық", "amount": 100}]
