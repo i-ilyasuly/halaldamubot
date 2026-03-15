@@ -7,6 +7,7 @@ from db_core import (add_user, save_chat_history, log_to_bigquery, check_access,
 from search_logic import search_data, get_nearby_companies
 from formatters import format_detail_message
 from ai_core import handle_photo, chat_with_ai
+from classifier import classify_query, should_classify
 from payments import process_successful_payment, get_premium_keyboard
 from gift_state import (set_awaiting_username, is_awaiting_username,
                         set_confirm_username, get_pending_username, clear_state)
@@ -231,7 +232,40 @@ def handle_message(msg):
                     log_to_bigquery(chat_id, "start", "/start", "Ескі қолданушы")
                     
         else:
-            found_items = search_data(text)
+            # ── КЛАССИФИКАТОР: 4+ сөз болса AI анықтайды ────────────────────
+            search_query = text  # Әдепкі — бүкіл мәтінді іздейміз
+            go_to_chat = False   # Тікелей AI чатқа жіберу керек пе
+
+            if should_classify(text):
+                action, extracted_query = classify_query(text)
+                if action == "chat":
+                    go_to_chat = True
+                elif extracted_query:
+                    search_query = extracted_query  # AI шығарған нақты атауды іздейміз
+
+            # AI чатқа жіберу керек болса — іздеусіз тікелей
+            if go_to_chat:
+                has_access, tier = check_access(chat_id, is_symbat)
+                if not has_access:
+                    send_message(chat_id, tier, reply_markup=get_premium_keyboard(), reply_to_message_id=user_msg_id)
+                    return
+                send_chat_action(chat_id, "typing")
+                if tier in ["premium", "VIP"]:
+                    set_message_reaction(chat_id, user_msg_id, random.choice(["✍", "👨‍💻"]))
+                ai_reply = chat_with_ai(chat_id, text, is_symbat)
+                keys = {"inline_keyboard": [[
+                    {"text": "👍 Пайдалы", "callback_data": "fb:good:ai"},
+                    {"text": "👎 Қате", "callback_data": "fb:bad:ai"}
+                ]]}
+                bot_msg_id = send_message(chat_id, ai_reply, reply_markup=keys, reply_to_message_id=user_msg_id)
+                if tier in ["premium", "VIP"] and bot_msg_id:
+                    set_message_reaction(chat_id, bot_msg_id, "👨‍💻")
+                save_chat_history(chat_id, "user", text)
+                save_chat_history(chat_id, "model", ai_reply)
+                log_to_bigquery(chat_id, "ai_chat", text, "Классификатор: чат")
+                return
+
+            found_items = search_data(search_query)
             
             if found_items:
                 has_access, tier = check_access(chat_id, is_symbat)
