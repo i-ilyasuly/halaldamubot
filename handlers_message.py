@@ -2,7 +2,8 @@ import re
 import random
 from bot_sender import send_message, edit_message, send_chat_action, download_photo, set_message_reaction, send_invoice, send_gift_invoice
 from db_core import (add_user, save_chat_history, log_to_bigquery, check_access, 
-                     increment_usage, revoke_premium, get_user_gender, redeem_gift_code)
+                     increment_usage, revoke_premium, get_user_gender, redeem_gift_code,
+                     get_pending_gift_for_username, delete_pending_gift, grant_premium)
 from search_logic import search_data, get_nearby_companies
 from formatters import format_detail_message
 from ai_core import handle_photo, chat_with_ai
@@ -178,6 +179,27 @@ def handle_message(msg):
                 save_chat_history(chat_id, "model", welcome_text)
                 log_to_bigquery(chat_id, "start", "/start", "Сымбат кірді")
             else:
+                # Pending gift тексеру — @username арқылы сыйлық күтіп тұр ма?
+                if username and username != "жоқ":
+                    gift_code, buyer_name = get_pending_gift_for_username(username)
+                    if gift_code:
+                        success, _ = redeem_gift_code(gift_code, chat_id)
+                        if success:
+                            delete_pending_gift(username)
+                            gift_msg = (
+                                f"🎁 <b>Сізге сыйлық бар екен!</b>\n\n"
+                                f"<b>{buyer_name}</b> сізге <b>30 күн Premium</b> сыйлапты! 🎉\n\n"
+                                f"Ботты шектеусіз қолдана бастаңыз 👇"
+                            )
+                            bot_msg_id = send_message(chat_id, gift_msg, reply_markup=_main_keyboard(), reply_to_message_id=user_msg_id, message_effect_id=EFFECT_HALAL)
+                            set_message_reaction(chat_id, user_msg_id, "❤")
+                            if bot_msg_id: set_message_reaction(chat_id, bot_msg_id, "🎉")
+                            add_user(chat_id, first_name, username)
+                            save_chat_history(chat_id, "user", text)
+                            save_chat_history(chat_id, "model", gift_msg)
+                            log_to_bigquery(chat_id, "redeem_pending_gift", gift_code, "Pending сыйлық алды")
+                            return
+
                 current_gender = get_user_gender(chat_id)
                 if not current_gender:
                     welcome_text = f"Сәлем, {first_name}! 👋\n\nМен — кез келген өнімнің немесе дәмхананың халал екенін тез әрі нақты тексеріп беретін көмекшіңізбін.\n\nЖақынырақ танысу үшін, жынысыңызды таңдаңызшы:"
@@ -271,6 +293,17 @@ def handle_message(msg):
 def _handle_username_input(chat_id, user_msg_id, text):
     """Пайдаланушы @username жазғанда валидациялау"""
     raw = text.strip()
+
+    # Бас тарту батырмасы
+    if raw == "❌ Бас тарту":
+        clear_state(chat_id)
+        send_message(
+            chat_id,
+            "↩️ Юзернейм енгізу болдырылмады.",
+            reply_markup=_main_keyboard(),
+            reply_to_message_id=user_msg_id
+        )
+        return
 
     # Кирилица тексеру
     if _has_cyrillic(raw):
