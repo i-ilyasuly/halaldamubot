@@ -65,7 +65,14 @@ def handle_callback(cb):
                 "❌ Қате: кириллица әріптері\n\n"
                 "<i>Ескерту: юзернейм міндетті түрде @ белгісінен басталуы керек және тек латын әріптерінен тұруы тиіс.</i>"
             )
+            # Бас тарту батырмасы — username режимінен шығу үшін
+            cancel_keyboard = {
+                "keyboard": [[{"text": "❌ Бас тарту"}]],
+                "resize_keyboard": True,
+                "one_time_keyboard": True
+            }
             edit_message(chat_id, message_id, prompt_text)
+            send_message(chat_id, "👇 Юзернейм жазыңыз немесе бас тартыңыз:", reply_markup=cancel_keyboard)
         else:
             text = "🎁 <b>Сыйлық әдісі таңдалды!</b>\n\nТөмендегі шотты төлегеннен кейін, сізге сыйлықты жіберуге арналған нұсқаулық беріледі 👇"
             edit_message(chat_id, message_id, text)
