@@ -1,4 +1,4 @@
-from bot_sender import send_message, edit_message, edit_reply_markup, answer_callback, set_message_reaction
+from bot_sender import send_message, edit_message, edit_reply_markup, answer_callback, set_message_reaction, send_gift_invoice
 from db_core import set_user_gender, log_to_bigquery, get_item_by_id, check_access
 from search_logic import get_nearby_companies
 from formatters import format_detail_message
@@ -25,6 +25,18 @@ def handle_callback(cb):
     if data == "buy_premium":
         answer_callback(cb["id"])
         handle_buy_premium_callback(chat_id, cb["id"])
+
+    # --- ЖАҢА: СЫЙЛЫҚ ТҮРІН ТАҢДАУ ---
+    elif data.startswith("gift_type:"):
+        gift_type = data.split(":")[1] # "link" немесе "inline" болады
+        answer_callback(cb["id"])
+        
+        text = "🎁 <b>Сыйлық әдісі таңдалды!</b>\n\nТөмендегі шотты төлегеннен кейін, сізге сыйлықты жіберуге арналған нұсқаулық беріледі 👇"
+        # Ескі хаттың (батырмалардың) орнын осы мәтінмен алмастырамыз
+        edit_message(chat_id, message_id, text)
+        
+        # Келесі қадамда біз send_gift_invoice функциясына осы gift_type-ты береміз
+        send_gift_invoice(chat_id, gift_type)
 
     elif data.startswith("gender:"):
         gender_val = data.split(":")[1]
@@ -76,7 +88,6 @@ def handle_callback(cb):
 
             bot_msg_id = send_message(chat_id, text, reply_markup=markup, message_effect_id=effect)
             
-            # ЖАҢА: Тізімнен батырма басқан кезде шыққан ЖАҢА хатқа реакция қою
             if reaction and bot_msg_id:
                 set_message_reaction(chat_id, bot_msg_id, reaction)
                 
@@ -98,7 +109,7 @@ def handle_callback(cb):
                 t_code, item_id = parts[3], parts[4]
                 item = get_item_by_id(t_code, item_id)
                 if item and item.get("map_link"):
-                            new_kb.append([{"text": "🗺️ Картадан көру", "url": item["map_link"], "style": "primary"}])
+                    new_kb.append([{"text": "🗺️ Картадан көру", "url": item["map_link"], "style": "primary"}])
                     
         edit_reply_markup(chat_id, message_id, {"inline_keyboard": new_kb}, inline_msg_id)
         log_to_bigquery(user_id, "feedback", "👍 Пайдалы", "Кері байланыс")
@@ -118,7 +129,7 @@ def handle_callback(cb):
                 t_code, item_id = parts[3], parts[4]
                 item = get_item_by_id(t_code, item_id)
                 if item and item.get("map_link"):
-                    new_kb.append([{"text": "🗺️ Картадан көру", "url": item["map_link"]}])
+                    new_kb.append([{"text": "🗺️ Картадан көру", "url": item["map_link"], "style": "primary"}])
         
         suffix = data[7:] 
         
@@ -146,7 +157,7 @@ def handle_callback(cb):
                 t_code, item_id = parts[4], parts[5]
                 item = get_item_by_id(t_code, item_id)
                 if item and item.get("map_link"):
-                    new_kb.append([{"text": "🗺️ Картадан көру", "url": item["map_link"]}])
+                    new_kb.append([{"text": "🗺️ Картадан көру", "url": item["map_link"], "style": "primary"}])
                     
         edit_reply_markup(chat_id, message_id, {"inline_keyboard": new_kb}, inline_msg_id)
         log_to_bigquery(user_id, "feedback", f"👎 Қате ({reason_text})", "Кері байланыс")
