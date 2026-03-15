@@ -252,16 +252,18 @@ def handle_message(msg):
                 send_chat_action(chat_id, "typing")
                 if tier in ["premium", "VIP"]:
                     set_message_reaction(chat_id, user_msg_id, random.choice(["✍", "👨‍💻"]))
-                ai_reply = chat_with_ai(chat_id, text, is_symbat)
+                ai_reply = chat_with_ai(chat_id, text, is_symbat, chat_id=chat_id, message_id=user_msg_id)
                 keys = {"inline_keyboard": [[
                     {"text": "👍 Пайдалы", "callback_data": "fb:good:ai"},
                     {"text": "👎 Қате", "callback_data": "fb:bad:ai"}
                 ]]}
-                bot_msg_id = send_message(chat_id, ai_reply, reply_markup=keys, reply_to_message_id=user_msg_id)
-                if tier in ["premium", "VIP"] and bot_msg_id:
-                    set_message_reaction(chat_id, bot_msg_id, "👨‍💻")
+                if ai_reply is not None:
+                    # Streaming болмаса (None емес) — тікелей жіберіледі
+                    bot_msg_id = send_message(chat_id, ai_reply, reply_markup=keys, reply_to_message_id=user_msg_id)
+                    if tier in ["premium", "VIP"] and bot_msg_id:
+                        set_message_reaction(chat_id, bot_msg_id, "👨‍💻")
                 save_chat_history(chat_id, "user", text)
-                save_chat_history(chat_id, "model", ai_reply)
+                save_chat_history(chat_id, "model", ai_reply or "")
                 log_to_bigquery(chat_id, "ai_chat", text, "Классификатор: чат")
                 return
 
@@ -337,16 +339,18 @@ def handle_message(msg):
                 if tier in ["premium", "VIP"]:
                     ai_loading_reaction = random.choice(["✍", "👨‍💻"])
                     set_message_reaction(chat_id, user_msg_id, ai_loading_reaction)
-                ai_reply = chat_with_ai(chat_id, text, is_symbat)
+                ai_reply = chat_with_ai(chat_id, text, is_symbat, chat_id=chat_id, message_id=user_msg_id)
                 keys = {"inline_keyboard": [[
                     {"text": "👍 Пайдалы", "callback_data": "fb:good:ai"},
                     {"text": "👎 Қате", "callback_data": "fb:bad:ai"}
                 ]]}
-                bot_msg_id = send_message(chat_id, ai_reply, reply_markup=keys, reply_to_message_id=user_msg_id)
-                if tier in ["premium", "VIP"] and bot_msg_id:
-                    set_message_reaction(chat_id, bot_msg_id, "👨‍💻")
+                if ai_reply is not None:
+                    # Streaming болмаса (None емес) — тікелей жіберіледі
+                    bot_msg_id = send_message(chat_id, ai_reply, reply_markup=keys, reply_to_message_id=user_msg_id)
+                    if tier in ["premium", "VIP"] and bot_msg_id:
+                        set_message_reaction(chat_id, bot_msg_id, "👨‍💻")
                 save_chat_history(chat_id, "user", text)    
-                save_chat_history(chat_id, "model", ai_reply)
+                save_chat_history(chat_id, "model", ai_reply or "")
                 log_to_bigquery(chat_id, "ai_chat", text, "Табылмады/AI жауап берді")
 
 
