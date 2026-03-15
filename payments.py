@@ -15,7 +15,7 @@ def process_pre_checkout(update):
 
 def process_successful_payment(message):
     chat_id = message["chat"]["id"]
-    username = message["chat"].get("first_name", "Жақсы адам") 
+    username = message["chat"].get("username", message["chat"].get("first_name", "Жақсы адам"))
     payment_info = message["successful_payment"]
     
     amount = payment_info["total_amount"]
@@ -25,7 +25,7 @@ def process_successful_payment(message):
     record_payment(chat_id, username, amount, payload, charge_id)
     log_to_bigquery(chat_id, "payment", f"{amount} Stars", "Сәтті төлем")
     
-    # 1. ЕГЕР ӨЗІНЕ АЛСА:
+    # 1. ӨЗІНЕ АЛСА:
     if payload == "premium_30_days":
         grant_premium(chat_id, days=30)
         success_text = (
@@ -35,11 +35,9 @@ def process_successful_payment(message):
         )
         send_message(chat_id, success_text, message_effect_id="5046509860389126442")
         
-    # 2. ЕГЕР СЫЙЛЫҚҚА АЛСА:
-    elif payload == "gift_premium_30_days":
+    # 2. СІЛТЕМЕ АРҚЫЛЫ СЫЙЛЫҚҚА АЛСА:
+    elif payload == "gift_premium_30_days_link":
         code = create_gift_code(chat_id, username)
-        
-        # ЕСКЕРТУ: Төмендегі "momyn_bot" орнына өз ботыңыздың нақты @username-ін жазыңыз (егер тесттік бот болса)
         bot_username = "alladalbot" 
         gift_link = f"https://t.me/{bot_username}?start={code}"
         
@@ -50,3 +48,20 @@ def process_successful_payment(message):
             "<i>Ескерту: Бұл сілтемені тек 1 адам ғана қолдана алады! Ол сілтемемен кірген бойда оған 30 күн Premium автоматты түрде қосылады.</i>"
         )
         send_message(chat_id, success_text, message_effect_id="5046509860389126442")
+
+    # 3. ТЕЛЕГРАМ АРҚЫЛЫ (ИНЛАЙН) СЫЙЛЫҚҚА АЛСА:
+    elif payload == "gift_premium_30_days_inline":
+        code = create_gift_code(chat_id, username)
+        
+        success_text = (
+            "🎁 <b>Сыйлық сәтті сатып алынды!</b>\n\n"
+            "Төмендегі <b>«🎁 Сыйлықты жіберу»</b> батырмасын басып, досыңызды таңдаңыз. "
+            "Сыйлық тікелей чатқа әдемі қорап болып барады!\n\n"
+            "<i>Ескерту: Бұл сыйлықты тек 1 адам ғана аша алады!</i>"
+        )
+        gift_markup = {
+            "inline_keyboard": [[
+                {"text": "🎁 Сыйлықты жіберу", "switch_inline_query": f"giftbox_{code}", "style": "success"}
+            ]]
+        }
+        send_message(chat_id, success_text, reply_markup=gift_markup, message_effect_id="5046509860389126442")
