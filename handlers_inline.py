@@ -12,7 +12,39 @@ def handle_inline(inline_query):
     
     user_info = inline_query["from"]
     user_id = user_info["id"]
+    first_name = user_info.get("first_name", "Досым")
     
+    # --- ЖАҢА: СЫЙЛЫҚ ҚОРАБЫН ИНЛАЙН ЖІБЕРУ ---
+    if query_text.startswith("giftbox_"):
+        gift_code = query_text.replace("giftbox_", "")
+        
+        # ЕСКЕРТУ: Өз ботыңыздың нақты @username-і
+        bot_username = "alladalbot"
+        
+        gift_result =[{
+            "type": "article",
+            "id": str(uuid.uuid4()),
+            "title": "🎁 Premium Сыйлық (30 күн)",
+            "description": "Осыны басып, досыңыздың чатына сыйлықты жіберіңіз!",
+            "thumbnail_url": "https://em-content.zobj.net/source/apple/354/wrapped-gift_1f381.png",
+            "thumbnail_width": 128,
+            "thumbnail_height": 128,
+            "input_message_content": {
+                "message_text": f"🎁 <b>{first_name}</b> сізге <b>30 күн Premium</b> сыйлық жіберді!\n\nСыйлықты ашу және ботты шектеусіз қолдану үшін төмендегі батырманы басыңыз 👇",
+                "parse_mode": "HTML"
+            },
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {"text": "🎁 Сыйлықты ашу", "url": f"https://t.me/{bot_username}?start={gift_code}", "style": "success"}
+                ]]
+            }
+        }]
+        
+        # Сыйлық нәтижесін Телеграмға қайтару
+        answer_inline_query(inline_query_id, gift_result)
+        return
+    # --- СЫЙЛЫҚ БЛОГЫНЫҢ СОҢЫ ---
+
     prompt_button = {"text": "🔍 Өнім немесе мекеме атауын жазыңыз...", "start_parameter": "search_help"}
     
     if len(query_text) >= 3:
