@@ -111,9 +111,9 @@ def process_successful_payment(message):
             gift_link = f"https://t.me/{bot_username}?start={code}"
             recipient_text = (
                 f"🎁 <b>Сізге сыйлық келді!</b>\n\n"
-                f"<b>{buyer_name}</b> сізге <b>30 күн Premium</b> сыйлады!\n\n"
+                f"<b>{buyer_name}</b> сізге <b>{t['label']} Premium</b> сыйлады!\n\n"
                 f"Сыйлықты қабылдау үшін төмендегі батырманы басыңыз 👇\n\n"
-                f"<i>Батырманы басқан сәтте Premium 30 күнге автоматты іске қосылады.</i>"
+                f"<i>Батырманы басқан сәтте Premium {t['label']}ге автоматты іске қосылады.</i>"
             )
             recipient_markup = {
                 "inline_keyboard": [[
@@ -139,7 +139,7 @@ def process_successful_payment(message):
                 f"🎁 <b>Сыйлық сәтті сатып алынды!</b>\n\n"
                 f"<b>@{recipient_username}</b> ботқа бұрын жазбағандықтан хабар тікелей жете алмады.\n\n"
                 f"📎 Сілтемені досыңызға жіберіңіз:\n👉 {gift_link}\n\n"
-                f"⭐️ <b>Маңызды:</b> Досыңыз сілтемені басқан сәтте Premium <b>автоматты 30 күнге іске қосылады!</b>\n\n"
+                f"⭐️ <b>Маңызды:</b> Досыңыз сілтемені басқан сәтте Premium <b>автоматты {t['label']}ге іске қосылады!</b>\n\n"
                 f"<i>Бұл сілтемені тек 1 адам ғана қолдана алады!</i>"
             )
         send_message(chat_id, success_text, message_effect_id="5046509860389126442")
