@@ -1,6 +1,6 @@
 import uuid
 from bot_sender import answer_inline_query
-from db_core import check_access, increment_usage
+from db_core import check_access, increment_usage, log_to_bigquery
 from search_logic import search_data
 from formatters import format_detail_message
 
@@ -18,7 +18,6 @@ def handle_inline(inline_query):
     if query_text.startswith("giftbox_"):
         gift_code = query_text.replace("giftbox_", "")
         
-        # ЕСКЕРТУ: Өз ботыңыздың нақты @username-і
         bot_username = "alladalbot"
         
         gift_result =[{
@@ -40,10 +39,8 @@ def handle_inline(inline_query):
             }
         }]
         
-        # Сыйлық нәтижесін Телеграмға қайтару
         answer_inline_query(inline_query_id, gift_result)
         return
-    # --- СЫЙЛЫҚ БЛОГЫНЫҢ СОҢЫ ---
 
     prompt_button = {"text": "🔍 Өнім немесе мекеме атауын жазыңыз...", "start_parameter": "search_help"}
     
@@ -77,5 +74,7 @@ def handle_inline(inline_query):
             })
         answer_inline_query(inline_query_id, tg_results, button=prompt_button)
         increment_usage(user_id)
+        log_to_bigquery(user_id, "inline_search", query_text,
+                        f"Табылды ({len(tg_results)})", result_count=len(tg_results))
     else:
         answer_inline_query(inline_query_id,[], button=prompt_button)
