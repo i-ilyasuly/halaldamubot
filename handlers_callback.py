@@ -1,5 +1,5 @@
 from bot_sender import send_message, send_photo_message, edit_message, edit_reply_markup, answer_callback, set_message_reaction, send_gift_invoice
-from db_core import set_user_gender, log_to_bigquery, get_item_by_id, check_access
+from db_core import set_user_gender, log_to_bigquery, get_item_by_id, check_access, get_search_session
 from search_logic import get_nearby_companies
 from formatters import format_detail_message
 from payments import handle_buy_premium_callback
@@ -225,20 +225,76 @@ def handle_callback(cb):
         set_user_gender(user_id, gender_kz)
         log_to_bigquery(user_id, "set_gender", gender_kz, "Профиль жаңартылды")
 
+    elif data.startswith("srch:"):
+        answer_callback(cb["id"])
+        try:
+            import math
+            _, page_str, session_id = data.split(":", 2)
+            page = int(page_str)
+            items_meta = get_search_session(session_id)
+            all_items = []
+            for m in items_meta:
+                t_code = "c" if m["t"] == "Мекеме" else "i"
+                item = get_item_by_id(t_code, m["id"])
+                if item:
+                    item['confidence'] = m.get('c', 'exact')
+                    all_items.append(item)
+
+            per_page = 5
+            total = len(all_items)
+            total_pages = math.ceil(total / per_page) if total > 0 else 1
+            if page > total_pages: page = total_pages
+            if page < 1: page = 1
+
+            start = (page - 1) * per_page
+            items = all_items[start:start + per_page]
+
+            reply_text = f"🔍 <b>Табылған нұсқалар:</b> {total} дана\n📄 {page}/{total_pages} бет\n\n"
+            keyboard = []
+            for idx, item in enumerate(items, start=start + 1):
+                confidence = item.get('confidence', 'exact')
+                prefix = "❓ " if confidence == 'fuzzy' else ""
+                if item['type'] == 'Мекеме':
+                    desc_text = f"📍 {item.get('address', '')}"
+                else:
+                    desc_text = f"🏷 {item.get('desc', '')}"
+                reply_text += f"<b>{idx}. {prefix}«{item['title']}»</b>\n{desc_text}\n"
+                if confidence == 'fuzzy':
+                    reply_text += f"<i>⚠️ Ұқсас, бірақ нақты сәйкес емес</i>\n"
+                reply_text += "\n"
+                t_code = "c" if item['type'] == "Мекеме" else "i"
+                keyboard.append([{"text": f"{idx}. {prefix}«{item['title']}»", "callback_data": f"itm:{t_code}:{item['id']}"}])
+
+            nav = []
+            if page > 1:
+                nav.append({"text": "⬅️ Артқа", "callback_data": f"srch:{page-1}:{session_id}"})
+            if page < total_pages:
+                nav.append({"text": "Келесі ➡️", "callback_data": f"srch:{page+1}:{session_id}"})
+            if nav:
+                keyboard.append(nav)
+
+            edit_message(chat_id, message_id, reply_text, {"inline_keyboard": keyboard})
+        except Exception as e:
+            print(f"[srch callback] Қате: {e}")
+
     elif data.startswith("loc:"):
         answer_callback(cb["id"])
-        parts = data.split(":")
-        page_str, lat_str, lon_str = parts[1], parts[2], parts[3]
-        text, markup = get_nearby_companies(float(lat_str), float(lon_str), int(page_str))
-        edit_message(chat_id, message_id, text, markup)
+        try:
+            # "loc:2:43.2567:76.4521" → ["loc", "2", "43.2567", "76.4521"]
+            _, page_str, lat_str, lon_str = data.split(":", 3)
+            text, markup = get_nearby_companies(float(lat_str), float(lon_str), int(page_str))
+            edit_message(chat_id, message_id, text, markup)
+        except Exception as e:
+            print(f"[loc callback] Қате: {e}, data={data}")
 
     elif data.startswith("itm:"):
         answer_callback(cb["id"])
         parts = data.split(":")
         t_code, item_id = parts[1], parts[2]
+        print(f"[itm callback] t_code={t_code}, item_id={item_id}, chat_id={chat_id}")
         item = get_item_by_id(t_code, item_id)
+        print(f"[itm callback] item={'табылды' if item else 'ТАБЫЛМАДЫ'}")
         if item:
-            # callback арқылы ашылғанда — пайдаланушы өзі таңдаған, exact деп есептейміз
             text, markup = format_detail_message(item, confidence='exact')
             has_access, tier = check_access(user_id, user_id == SYMBAT_ID)
             effect = None
@@ -257,6 +313,7 @@ def handle_callback(cb):
                                                 reply_markup=markup, message_effect_id=effect)
             else:
                 bot_msg_id = send_message(chat_id, text, reply_markup=markup, message_effect_id=effect)
+            print(f"[itm callback] bot_msg_id={bot_msg_id}")
             if reaction and bot_msg_id:
                 set_message_reaction(chat_id, bot_msg_id, reaction)
         else:
