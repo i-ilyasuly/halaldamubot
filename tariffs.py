@@ -1,4 +1,5 @@
 # Барлық тарифтер бір жерде — өзгерту оңай болсын
+# Теңге бағасы жуықтап көрсетіледі (~), нақты баға Stars сатып алу кезінде белгілі болады
 
 TARIFFS = [
     {
@@ -7,7 +8,8 @@ TARIFFS = [
         "label": "1 ай",
         "stars": 100,
         "discount": 0,
-        "emoji": "🥉"
+        "emoji": "🥉",
+        "kzt": "~1 000"
     },
     {
         "id": "premium_90_days",
@@ -15,7 +17,8 @@ TARIFFS = [
         "label": "3 ай",
         "stars": 250,
         "discount": 17,
-        "emoji": "🥈"
+        "emoji": "🥈",
+        "kzt": "~2 300"
     },
     {
         "id": "premium_180_days",
@@ -23,7 +26,8 @@ TARIFFS = [
         "label": "6 ай",
         "stars": 500,
         "discount": 17,
-        "emoji": "🥇"
+        "emoji": "🥇",
+        "kzt": "~4 600"
     },
     {
         "id": "premium_365_days",
@@ -31,7 +35,8 @@ TARIFFS = [
         "label": "12 ай",
         "stars": 1000,
         "discount": 17,
-        "emoji": "💎"
+        "emoji": "💎",
+        "kzt": "~9 100"
     },
 ]
 
@@ -49,9 +54,9 @@ def get_tariff_keyboard(callback_prefix="buy"):
     keyboard = []
     for t in TARIFFS:
         if t["discount"] > 0:
-            btn_text = f"{t['emoji']} {t['label']} — {t['stars']} ⭐ (-{t['discount']}%)"
+            btn_text = f"{t['emoji']} {t['label']} — {t['stars']} ⭐ ({t['kzt']} ₸, -{t['discount']}%)"
         else:
-            btn_text = f"{t['emoji']} {t['label']} — {t['stars']} ⭐"
+            btn_text = f"{t['emoji']} {t['label']} — {t['stars']} ⭐ ({t['kzt']} ₸)"
         keyboard.append([{"text": btn_text, "callback_data": f"{callback_prefix}_tariff:{t['id']}"}])
     return {"inline_keyboard": keyboard}
 
@@ -60,5 +65,5 @@ def get_tariff_description(tariff_id):
     if not t:
         return ""
     if t["discount"] > 0:
-        return f"{t['emoji']} <b>{t['label']}</b> — {t['stars']} ⭐ <i>(-{t['discount']}% үнемдеу)</i>"
-    return f"{t['emoji']} <b>{t['label']}</b> — {t['stars']} ⭐"
+        return f"{t['emoji']} <b>{t['label']}</b> — {t['stars']} ⭐ <i>({t['kzt']} ₸, -{t['discount']}% үнемдеу)</i>"
+    return f"{t['emoji']} <b>{t['label']}</b> — {t['stars']} ⭐ <i>({t['kzt']} ₸)</i>"
