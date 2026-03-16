@@ -33,7 +33,7 @@ def process_successful_payment(message):
     charge_id = payment_info["telegram_payment_charge_id"]
 
     record_payment(chat_id, username, amount, payload, charge_id)
-    log_to_bigquery(chat_id, "payment", f"{amount} Stars", "Сәтті төлем")
+    log_to_bigquery(chat_id, "payment", f"{amount} Stars", "Сәтті төлем", is_premium=True, stars_spent=amount)
 
     # 1. ӨЗІНЕ АЛСА — барлық тарифтер
     from tariffs import get_tariff_by_id
