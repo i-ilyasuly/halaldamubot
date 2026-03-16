@@ -33,10 +33,24 @@ def process_successful_payment(message):
     charge_id = payment_info["telegram_payment_charge_id"]
 
     record_payment(chat_id, username, amount, payload, charge_id)
-    log_to_bigquery(chat_id, "payment", f"{amount} Stars", "Сәтті төлем", is_premium=True, stars_spent=amount)
+
+    # Төлем түрін анықтаймыз
+    from tariffs import get_tariff_by_id
+    if get_tariff_by_id(payload):
+        payment_type = "own"
+    elif "_link:" in payload:
+        payment_type = "gift_link"
+    elif "_inline:" in payload:
+        payment_type = "gift_inline"
+    elif "_username:" in payload:
+        payment_type = "gift_username"
+    else:
+        payment_type = "unknown"
+
+    log_to_bigquery(chat_id, "payment", f"{amount} Stars", "Сәтті төлем",
+                    is_premium=True, stars_spent=amount, platform=payment_type)
 
     # 1. ӨЗІНЕ АЛСА — барлық тарифтер
-    from tariffs import get_tariff_by_id
     own_tariff = get_tariff_by_id(payload)
     if own_tariff:
         grant_premium(chat_id, days=own_tariff["days"])
