@@ -91,10 +91,7 @@ def get_nearby_companies(user_lat, user_lon, page=1):
         date_str = f"\n   📅 {d_start} - {d_end}" if d_start and d_end else (f"\n   📅 {d_end} дейін" if d_end else "")
         icon = "✅" if "Белсенді" in st else "⚠️"
         text += f"{icon} <b>{idx}. «{clean_title}»</b>\n   🏷 {item['category']}\n   📍 {item['address']}\n   📏 {dist_str}\n   📊 {st}{date_str}\n\n"
-        # Bot API 9.4: style "success" → жасыл, "destructive" → қызыл
-        # url батырмасына да style қолданылады
-        btn_style = "success" if "Белсенді" in st else "destructive"
-        btn = {"text": f"🗺️ {idx}. «{clean_title}»", "url": item['link'], "style": btn_style}
+        btn = {"text": f"🗺️ {idx}. «{clean_title}»", "url": item['link']}
         inline_keyboard.append([btn])
 
     nav_buttons = []
