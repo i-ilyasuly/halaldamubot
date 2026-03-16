@@ -26,7 +26,8 @@ def _main_keyboard():
     return {
         "keyboard": [
             [{"text": "📍 Тұрған орнымды жіберу", "request_location": True}],
-            [{"text": "⭐️ Premium алу"}, {"text": "🎁 Premium сыйлау"}]
+            [{"text": "⭐️ Premium алу"}, {"text": "🎁 Premium сыйлау"}],
+            [{"text": "⚙️ Баптаулар"}]
         ],
         "resize_keyboard": True
     }
@@ -54,6 +55,8 @@ def handle_message(msg):
             send_message(chat_id, tier, reply_markup=get_premium_keyboard(), reply_to_message_id=user_msg_id)
             return
         
+        # Фото жібергенде gift state тазаланады
+        clear_state(chat_id)
         send_chat_action(chat_id, "typing")
         
         if tier in ["premium", "VIP"]:
@@ -99,12 +102,18 @@ def handle_message(msg):
             send_message(chat_id, tier, reply_markup=get_premium_keyboard(), reply_to_message_id=user_msg_id)
             return
         
+        # Кез келген state болса тазалаймыз — локация кез келген уақытта жіберіледі
+        clear_state(chat_id)
         send_chat_action(chat_id, "find_location")
             
         lat, lon = msg["location"]["latitude"], msg["location"]["longitude"]
         text, markup = get_nearby_companies(lat, lon, page=1)
-        
-        bot_msg_id = send_message(chat_id, text, reply_markup=markup, reply_to_message_id=user_msg_id)
+
+        bot_msg_id = send_message(chat_id, text, reply_markup=markup)
+
+        # Локация хабарын өшіреміз — чат таза болсын, карта превью қалмасын
+        from bot_sender import delete_message
+        delete_message(chat_id, user_msg_id)
         
         if tier in ["premium", "VIP"] and bot_msg_id:
             set_message_reaction(chat_id, bot_msg_id, "⚡")
@@ -127,7 +136,48 @@ def handle_message(msg):
 
         # ── ҚАЛЫПТЫ БАТЫРМАЛАР ─────────────────────────────────────────────
 
-        if text == "🎁 Premium сыйлау":
+        if text == "⚙️ Баптаулар":
+            send_chat_action(chat_id, "typing")
+            from db_core import db, _now
+            from datetime import timezone
+            doc = db.collection("users").document(str(chat_id)).get()
+            prem_text = "❌ Premium жоқ"
+            if doc.exists:
+                prem_until = doc.to_dict().get("premium_until")
+                if prem_until:
+                    from datetime import datetime
+                    if isinstance(prem_until, datetime):
+                        if prem_until.tzinfo is None:
+                            prem_until = prem_until.replace(tzinfo=timezone.utc)
+                        now = _now()
+                        if prem_until > now:
+                            delta = prem_until - now
+                            total_days = delta.days
+                            months = total_days // 30
+                            days = total_days % 30
+                            if months > 0 and days > 0:
+                                prem_text = f"✅ Premium белсенді\n📅 {prem_until.strftime('%d.%m.%Y')} дейін\n⏳ {months} ай {days} күн қалды"
+                            elif months > 0:
+                                prem_text = f"✅ Premium белсенді\n📅 {prem_until.strftime('%d.%m.%Y')} дейін\n⏳ {months} ай қалды"
+                            else:
+                                prem_text = f"✅ Premium белсенді\n📅 {prem_until.strftime('%d.%m.%Y')} дейін\n⏳ {days} күн қалды"
+                        else:
+                            prem_text = "❌ Premium мерзімі өткен"
+
+            settings_text = (
+                f"⚙️ <b>Баптаулар</b>\n\n"
+                f"👤 <b>Есімің:</b> {first_name}\n"
+                f"🏆 <b>Тариф:</b> {prem_text}"
+            )
+            settings_markup = {
+                "inline_keyboard": [
+                    [{"text": "⭐️ Premium алу", "callback_data": "buy_premium"}]
+                ] if "❌" in prem_text else []
+            }
+            send_message(chat_id, settings_text, reply_markup=settings_markup, reply_to_message_id=user_msg_id)
+            return
+
+        elif text == "🎁 Premium сыйлау":
             send_chat_action(chat_id, "typing")
             gift_text = (
                 "🎁 <b>Premium сыйлау</b>\n\n"
