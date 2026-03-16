@@ -1,6 +1,6 @@
 import re
 import random
-from bot_sender import send_message, edit_message, send_chat_action, download_photo, set_message_reaction, send_invoice, send_gift_invoice
+from bot_sender import send_message, send_photo_message, edit_message, send_chat_action, download_photo, set_message_reaction, send_invoice, send_gift_invoice
 from db_core import (add_user, save_chat_history, log_to_bigquery, check_access, 
                      increment_usage, revoke_premium, get_user_gender, redeem_gift_code,
                      get_pending_gift_for_username, delete_pending_gift, grant_premium)
@@ -63,7 +63,7 @@ def handle_message(msg):
         photo_id = msg["photo"][-1]["file_id"]
         image_bytes = download_photo(photo_id)
         if image_bytes:
-            result_msg, markup = handle_photo(image_bytes, chat_id, username)
+            result_msg, markup, item_image_url = handle_photo(image_bytes, chat_id, username)
             
             effect = None
             reaction = None
@@ -77,7 +77,13 @@ def handle_message(msg):
                 else:
                     reaction = "🤔"
             
-            bot_msg_id = send_message(chat_id, result_msg, reply_markup=markup, message_effect_id=effect, reply_to_message_id=user_msg_id)
+            if item_image_url:
+                bot_msg_id = send_photo_message(chat_id, item_image_url, result_msg,
+                                                reply_markup=markup, message_effect_id=effect,
+                                                reply_to_message_id=user_msg_id)
+            else:
+                bot_msg_id = send_message(chat_id, result_msg, reply_markup=markup,
+                                          message_effect_id=effect, reply_to_message_id=user_msg_id)
             
             if reaction and bot_msg_id:
                 set_message_reaction(chat_id, bot_msg_id, reaction) 
@@ -293,7 +299,14 @@ def handle_message(msg):
                             reaction = "👎"
                     elif confidence == 'fuzzy' and tier in ["premium", "VIP"]:
                         reaction = "🤔"  # Fuzzy нәтижеде сұрақ белгісі
-                    bot_msg_id = send_message(chat_id, reply_text, reply_markup=markup, message_effect_id=effect, reply_to_message_id=user_msg_id)
+                    image_url = found_items[0].get("image_url", "")
+                    if image_url:
+                        bot_msg_id = send_photo_message(chat_id, image_url, reply_text,
+                                                        reply_markup=markup, message_effect_id=effect,
+                                                        reply_to_message_id=user_msg_id)
+                    else:
+                        bot_msg_id = send_message(chat_id, reply_text, reply_markup=markup,
+                                                  message_effect_id=effect, reply_to_message_id=user_msg_id)
                     if reaction and bot_msg_id:
                         set_message_reaction(chat_id, bot_msg_id, reaction)
                     save_chat_history(chat_id, "user", text)
