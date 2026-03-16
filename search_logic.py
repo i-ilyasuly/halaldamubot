@@ -47,8 +47,15 @@ def get_nearby_companies(user_lat, user_lon, page=1):
             c_lat, c_lon = coords
             dist = get_distance(user_lat, user_lon, c_lat, c_lon)
             if dist <= 50:
-                cat = c.get("category", "")
-                if isinstance(cat, dict): cat = cat.get("name", "Санат көрсетілмеген")
+                # API-да "categories" (массив) немесе "category" (dict/string) болуы мүмкін
+                cat = ""
+                raw_cat = c.get("categories") or c.get("category", "")
+                if isinstance(raw_cat, list) and raw_cat:
+                    cat = raw_cat[0].get("name", "") if isinstance(raw_cat[0], dict) else str(raw_cat[0])
+                elif isinstance(raw_cat, dict):
+                    cat = raw_cat.get("name", "")
+                elif isinstance(raw_cat, str):
+                    cat = raw_cat
                 if not cat: cat = "Тамақтану орындары / Мекеме"
                 address = c.get("address", "") or c.get("legal_address", "Мекенжай көрсетілмеген")
                 nearby.append({
@@ -84,7 +91,11 @@ def get_nearby_companies(user_lat, user_lon, page=1):
         date_str = f"\n   📅 {d_start} - {d_end}" if d_start and d_end else (f"\n   📅 {d_end} дейін" if d_end else "")
         icon = "✅" if "Белсенді" in st else "⚠️"
         text += f"{icon} <b>{idx}. «{clean_title}»</b>\n   🏷 {item['category']}\n   📍 {item['address']}\n   📏 {dist_str}\n   📊 {st}{date_str}\n\n"
-        inline_keyboard.append([{"text": f"🗺️ {idx}. «{clean_title}»", "url": item['link']}])
+        # Bot API 9.4: style "success" → жасыл, "destructive" → қызыл
+        # url батырмасына да style қолданылады
+        btn_style = "success" if "Белсенді" in st else "destructive"
+        btn = {"text": f"🗺️ {idx}. «{clean_title}»", "url": item['link'], "style": btn_style}
+        inline_keyboard.append([btn])
 
     nav_buttons = []
     if page > 1: nav_buttons.append({"text": "⬅️ Артқа", "callback_data": f"loc:{page-1}:{round(user_lat,4)}:{round(user_lon,4)}"})
@@ -120,7 +131,10 @@ def _is_match(query_text, title):
 
     # ── 2. СӨЗДЕРГЕ БӨЛІП — бастапқы логика (өзгертілмеген) ──────────────
     stop_words = {'халал', 'харам', 'рұқсат', 'ма', 'ме', 'ба', 'бе', 'па', 'пе',
-                  'деген', 'қандай', 'осы', 'точно', 'күдікті', 'емес'}
+                  'деген', 'қандай', 'осы', 'точно', 'күдікті', 'емес',
+                  'өнім', 'оним', 'onim', 'тамақ', 'азық', 'дүкен', 'дукен',
+                  'мекеме', 'өндіруші', 'сұрайын', 'айтшы', 'білгім', 'келеді',
+                  'жолы', 'бұлай', 'деген', 'жазады', 'жазды', 'сенен', 'маған'}
     raw_words = query_text.lower().replace('-', ' ').split()
     words = [w for w in raw_words if len(w) > 3 and w not in stop_words]
 
