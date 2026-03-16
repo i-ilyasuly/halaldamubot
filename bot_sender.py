@@ -27,20 +27,6 @@ def send_message(chat_id, text, reply_markup=None, message_effect_id=None, reply
         if resp.get("ok"):
             return resp["result"]["message_id"]
 
-    # style батырмасы қабылданбаса — style алып тастап қайта жіберу
-    err_desc = resp.get("description", "")
-    if "reply_markup" in err_desc or "button" in err_desc or "style" in err_desc.lower():
-        print(f"[send_message] Батырма қатесі, style алынады: {resp}")
-        if payload.get("reply_markup"):
-            markup = payload["reply_markup"]
-            for row in markup.get("inline_keyboard", []):
-                for btn in row:
-                    btn.pop("style", None)
-            payload["reply_markup"] = markup
-        resp = requests.post(url, json=payload).json()
-        if resp.get("ok"):
-            return resp["result"]["message_id"]
-
     print(f"[send_message] Қате: {resp}")
     return None
 
@@ -90,20 +76,6 @@ def send_photo_message(chat_id, photo_url, caption, reply_markup=None,
 
     if resp.get("ok"):
         return resp["result"]["message_id"]
-
-    # style батырмасы қабылданбаса — style алып тастап қайта жіберу
-    err_desc = resp.get("description", "")
-    if "reply_markup" in err_desc or "button" in err_desc or "style" in err_desc.lower():
-        print(f"[send_photo_message] style алынады: {resp}")
-        if payload.get("reply_markup"):
-            markup = payload["reply_markup"]
-            for row in markup.get("inline_keyboard", []):
-                for btn in row:
-                    btn.pop("style", None)
-            payload["reply_markup"] = markup
-        resp = requests.post(url, json=payload).json()
-        if resp.get("ok"):
-            return resp["result"]["message_id"]
 
     # Сурет жүктелмесе — fallback: тікелей мәтін хабары
     print(f"[send_photo_message] Сурет жүктелмеді, мәтін жіберіледі: {resp.get('description', '')}")
