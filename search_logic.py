@@ -37,7 +37,7 @@ def get_distance(lat1, lon1, lat2, lon2):
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1))*math.cos(math.radians(lat2))*math.sin(dlon/2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-def get_nearby_companies(user_lat, user_lon, page=1):
+def get_nearby_companies(user_lat, user_lon, page=1, lang="kz"):
     load_cache()
     nearby = []
     for c in CACHE["companies"]:
@@ -69,7 +69,8 @@ def get_nearby_companies(user_lat, user_lon, page=1):
     nearby.sort(key=lambda x: x["dist"])
     total_items = len(nearby)
     if total_items == 0:
-        return "😔 Өкінішке орай, 50 км радиуста сертификаты бар халал орындар табылмады.", None
+        from translations import t
+        return t("location_not_found", lang), None
 
     per_page = 3
     total_pages = math.ceil(total_items / per_page)
@@ -77,7 +78,8 @@ def get_nearby_companies(user_lat, user_lon, page=1):
     start_idx = (page - 1) * per_page
     items_to_show = nearby[start_idx:start_idx + per_page]
 
-    text = f"📍 <b>Сенің жаныңдағы халал мекемелер:</b>\n📄 {page}/{total_pages} бет ({total_items} мекеме)\n\n"
+    from translations import t
+    text = t("location_header", lang, page=page, total_pages=total_pages, total=total_items)
     inline_keyboard = []
     for idx, item in enumerate(items_to_show, start=start_idx + 1):
         dist_str = f"{item['dist']:.2f} км" if item['dist'] >= 1 else f"{int(item['dist']*1000)} м"
@@ -91,12 +93,19 @@ def get_nearby_companies(user_lat, user_lon, page=1):
         date_str = f"\n   📅 {d_start} - {d_end}" if d_start and d_end else (f"\n   📅 {d_end} дейін" if d_end else "")
         icon = "✅" if "Белсенді" in st else "⚠️"
         text += f"{icon} <b>{idx}. «{clean_title}»</b>\n   🏷 {item['category']}\n   📍 {item['address']}\n   📏 {dist_str}\n   📊 {st}{date_str}\n\n"
-        btn = {"text": f"🗺️ {idx}. «{clean_title}»", "url": item['link']}
+        # Статусқа қарай түс
+        if cert_status == "active":
+            btn_style = "success"
+        elif cert_status in ("expired", "revoked"):
+            btn_style = "danger"
+        else:
+            btn_style = "primary"
+        btn = {"text": f"🗺️ {idx}. «{clean_title}»", "url": item['link'], "style": btn_style}
         inline_keyboard.append([btn])
 
     nav_buttons = []
-    if page > 1: nav_buttons.append({"text": "⬅️ Артқа", "callback_data": f"loc:{page-1}:{round(user_lat,4)}:{round(user_lon,4)}"})
-    if page < total_pages: nav_buttons.append({"text": "Келесі ➡️", "callback_data": f"loc:{page+1}:{round(user_lat,4)}:{round(user_lon,4)}"})
+    if page > 1: nav_buttons.append({"text": t("btn_back", lang), "callback_data": f"loc:{page-1}:{round(user_lat,4)}:{round(user_lon,4)}", "style": "primary"})
+    if page < total_pages: nav_buttons.append({"text": t("btn_next", lang), "callback_data": f"loc:{page+1}:{round(user_lat,4)}:{round(user_lon,4)}", "style": "primary"})
     if nav_buttons: inline_keyboard.append(nav_buttons)
     return text, {"inline_keyboard": inline_keyboard}
 
