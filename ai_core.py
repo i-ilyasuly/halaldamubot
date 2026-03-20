@@ -310,6 +310,47 @@ def handle_photo(image_bytes, chat_id, username, lang="kz"):
                 t_code = "c" if item['type'] == "Мекеме" else "i"
                 keyboard.append([{"text": f"{idx+1}. «{item['title']}»", "callback_data": f"itm:{t_code}:{item['id']}"}])
             return reply_text, {"inline_keyboard": keyboard}, ""
+
     else:
-        from translations import t
-        return t("photo_not_found", lang, names=names_str), None, ""
+        # ── AI #1: Суреттен алынған атауды нормализациялау ────────────────
+        # Бірінші іздеу табылмады → AI#1 атауды латынға аударады
+        # Мысалы: "Mexxi" дұрыс жазылған болса да базада "MEXXI" болуы мүмкін
+        original_name = product_names[0] if product_names else ""
+        normalized_name = extract_search_term(original_name) if original_name else None
+        second_found = []
+
+        if normalized_name:
+            print(f"[handle_photo AI#1] '{original_name}' → '{normalized_name}'")
+            seen_ids = set()
+            found = search_data(normalized_name)
+            for item in found:
+                if item['id'] not in seen_ids:
+                    second_found.append(item)
+                    seen_ids.add(item['id'])
+
+        if second_found:
+            # Нормализациямен табылды ✅
+            if len(second_found) == 1:
+                text, markup = format_detail_message(second_found[0], confidence='exact', lang=lang)
+                from translations import t
+                final_text = t("photo_recognized", lang, name=original_name) + text
+                return final_text, markup, second_found[0].get("image_url", "")
+            else:
+                from translations import t
+                reply_text = t("photo_recognized_choose", lang, name=original_name)
+                keyboard = []
+                for idx, item in enumerate(second_found[:5]):
+                    if item['type'] == 'Мекеме':
+                        desc_text = f"📍 {item.get('address', 'Мекенжай жоқ')}"
+                    else:
+                        desc_text = f"🏷 {item.get('desc', '')}"
+                    reply_text += f"<b>{idx+1}. «{item['title']}»</b>\n{desc_text}\n\n"
+                    t_code = "c" if item['type'] == "Мекеме" else "i"
+                    keyboard.append([{"text": f"{idx+1}. «{item['title']}»", "callback_data": f"itm:{t_code}:{item['id']}"}])
+                return reply_text, {"inline_keyboard": keyboard}, ""
+
+        else:
+            # ── AI #2: Қатаң "табылмады" жауабы ──────────────────────────
+            # Екі рет іздеп те табылмады → AI "базада жоқ" деп айтады
+            not_found_reply = get_not_found_reply(original_name, normalized_name, lang=lang)
+            return not_found_reply, None, ""
