@@ -12,6 +12,18 @@ def strip_html(text):
     text = re.sub(r'<[^>]+>', '', text)
     return text.strip()
 
+def _localize_status(status, lang):
+    """Статус жолын берілген тілге аударады (display үшін ғана)."""
+    if lang != 'ru':
+        return status
+    return (status
+        .replace("✅ Рұқсат етілген", "✅ Разрешено (халяль)")
+        .replace("🚫 Харам",          "🚫 Харам")
+        .replace("⚠️ Күдікті",        "⚠️ Сомнительно")
+        .replace("✅ Белсенді",        "✅ Активен")
+        .replace("❌ Мерзімі аяқталған", "❌ Срок истёк")
+        .replace("🚫 Қайтарып алынған", "🚫 Отозван"))
+
 def format_item_dict(data, type_name):
     if type_name == "Мекеме":
         d_start = data.get("certificate_date_start", "")
@@ -40,9 +52,7 @@ def format_item_dict(data, type_name):
             "image_url": image_url
         }
     else:
-        # ── ӨЗГЕРТУ #2: Қоспа статусын дұрыс анықтау ──────────────────────
-        # Бұрын: Халяль емес барлығы → "🚫 Күдікті" (Харам да күдікті болып шығатын)
-        # Енді: Халяль → ✅, Харам → 🚫, Күдікті/басқа → ⚠️
+        # Халяль → ✅, Харам → 🚫, Күдікті/басқа → ⚠️
         raw_status = data.get("status")
         status_name = ""
         if isinstance(raw_status, dict):
@@ -56,7 +66,6 @@ def format_item_dict(data, type_name):
             st = "🚫 Харам"
         else:
             st = "⚠️ Күдікті"
-        # ────────────────────────────────────────────────────────────────────
 
         item_title = data.get("title", "") or str(data.get("slug", "")).upper()
         return {
@@ -67,15 +76,7 @@ def format_item_dict(data, type_name):
             "info": strip_html(data.get("desc", "")),
             "status": st
         }
-def _localize_status(status, lang):
-    """Статус жолын берілген тілге аударады (тек display үшін)."""
-    if lang != 'ru':
-        return status
-    return (status
-        .replace("✅ Рұқсат етілген", "✅ Разрешено (халяль)")
-        .replace("🚫 Харам",          "🚫 Харам")
-        .replace("⚠️ Күдікті",        "⚠️ Сомнительно"))
-        
+
 def format_detail_message(item, confidence='exact', query_text='', lang='kz'):
     """
     confidence='exact' → қалыпты хабар
@@ -123,20 +124,15 @@ def format_detail_message(item, confidence='exact', query_text='', lang='kz'):
         return msg, {"inline_keyboard": keys}
 
     else:
-        # ── ӨЗГЕРТУ #2 (жалғасы): Харам / Күдікті / Халал хабарларын бөлу ─
-        # Бұрын: "Рұқсат" жоқ → бәрі haram хабарымен шықты
-        # Енді: Харам → haram хабары, Күдікті → suspicious хабары, Халал → halal хабары
         if "Рұқсат" in item['status']:
             msg = fuzzy_warning + t('result_ingredient_halal', lang, title=clean_title)
         elif "Харам" in item['status']:
             msg = fuzzy_warning + t('result_ingredient_haram', lang, title=clean_title)
         else:
-            # ⚠️ Күдікті — бұрын haram деп шығатын, енді күдікті деп шығады
             msg = fuzzy_warning + t('result_ingredient_suspicious', lang, title=clean_title)
-        # ────────────────────────────────────────────────────────────────────
 
         msg += t('result_scientific_name', lang, desc=item['desc'])
-        msg += t('result_status', lang, status=item['status'])
+        msg += t('result_status', lang, status=_localize_status(item['status'], lang))
         if item.get('info'):
             msg += t('result_info', lang, info=strip_html(item['info']))
 
