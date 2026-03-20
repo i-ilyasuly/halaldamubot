@@ -97,7 +97,7 @@ def handle_callback(cb):
         answer_callback(cb["id"])
         from tariffs import get_tariff_description
         from bot_sender import send_tariff_invoice
-        confirm_text = t("buy_tariff_confirm", lang, tariff=get_tariff_description(tariff_id))
+        confirm_text = t("buy_tariff_confirm", lang, tariff=get_tariff_description(tariff_id, lang=lang))
         edit_message(chat_id, message_id, confirm_text)
         send_tariff_invoice(chat_id, tariff_id)
 
@@ -127,11 +127,11 @@ def handle_callback(cb):
         buyer_name_display = cb["from"].get("first_name", "Жанашыр") if anon_type == "named" else "Жасырын жанашыр"
 
         if gift_type == "username" and recipient:
-            confirm_text = t("gift_confirm_username", lang, tariff=get_tariff_description(tariff_id), recipient=recipient, buyer=buyer_name_display)
+            confirm_text = t("gift_confirm_username", lang, tariff=get_tariff_description(tariff_id, lang=lang), recipient=recipient, buyer=buyer_name_display)
             edit_message(chat_id, message_id, confirm_text)
             send_gift_tariff_invoice(chat_id, tariff_id, "username", recipient_username=recipient, buyer_name=buyer_name_display)
         else:
-            confirm_text = t("gift_confirm_other", lang, tariff=get_tariff_description(tariff_id), buyer=buyer_name_display)
+            confirm_text = t("gift_confirm_other", lang, tariff=get_tariff_description(tariff_id, lang=lang), buyer=buyer_name_display)
             edit_message(chat_id, message_id, confirm_text)
             send_gift_tariff_invoice(chat_id, tariff_id, gift_type, buyer_name=buyer_name_display)
 
