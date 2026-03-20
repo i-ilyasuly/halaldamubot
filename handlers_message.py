@@ -9,7 +9,7 @@ from db_core import (add_user, save_chat_history, log_to_bigquery, check_access,
 from translations import t
 from search_logic import search_data, get_nearby_companies
 from formatters import format_detail_message
-from ai_core import handle_photo, chat_with_ai
+from ai_core import handle_photo, chat_with_ai, extract_search_term, get_not_found_reply
 from classifier import classify_query, should_classify
 from payments import process_successful_payment, get_premium_keyboard
 from gift_state import (set_awaiting_username, is_awaiting_username,
@@ -18,7 +18,6 @@ from gift_state import (set_awaiting_username, is_awaiting_username,
 SYMBAT_ID = 1042456426
 
 def _get_city(lat, lon):
-    """Google Geocoding API арқылы қала атауын анықтайды"""
     try:
         from config import GEOCODING_API_KEY
         url = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -39,14 +38,12 @@ EFFECT_HALAL = "5046509860389126442"
 EFFECT_EXPIRED = "5104858069142078462"
 
 def _access_denied_msg(lang, tier):
-    """check_access False қайтарғанда — дұрыс хабар мен markup қайтарады"""
     from translations import t
     from payments import get_premium_keyboard
     if tier == "SPAM_LIMIT":
         return t("spam_protection", lang), None
     return t("limit_hit", lang), get_premium_keyboard(lang)
 
-# Username валидациясы: @ + тек латын/сан/_ (5-32 символ)
 USERNAME_RE = re.compile(r'^@[a-zA-Z0-9_]{5,32}$')
 
 def _has_cyrillic(text):
@@ -67,7 +64,6 @@ def handle_message(msg):
     user_msg_id = msg["message_id"]
     first_name = msg["chat"].get("first_name", "Досым")
     username = msg["chat"].get("username", "жоқ")
-    language_code = msg.get("from", {}).get("language_code", "")
     is_symbat = (chat_id == SYMBAT_ID)
     lang = get_user_language(chat_id) if not is_symbat else 'kz'
 
@@ -121,7 +117,8 @@ def handle_message(msg):
                 set_message_reaction(chat_id, bot_msg_id, reaction)
             save_chat_history(chat_id, "user", "Мен саған бір сурет жібердім")
             save_chat_history(chat_id, "model", result_msg)
-            log_to_bigquery(chat_id, "photo_search", "Сурет", "Тексерілді", is_premium=(tier in ["premium", "VIP"]))
+            log_to_bigquery(chat_id, "photo_search", "Сурет", "Тексерілді",
+                            is_premium=(tier in ["premium", "VIP"]))
             increment_usage(chat_id)
 
     elif "location" in msg:
@@ -158,7 +155,7 @@ def handle_message(msg):
             _handle_username_confirm(chat_id, user_msg_id, text, lang)
             return
 
-        # ── ҚАЛЫПТЫ БАТЫРМАЛАР ─────────────────────────────────────────────
+        # ── БАТЫРМАЛАР ─────────────────────────────────────────────────────
         if text in ("⚙️ Баптаулар", "⚙️ Настройки"):
             send_chat_action(chat_id, "typing")
             from db_core import db, _now
@@ -184,21 +181,23 @@ def handle_message(msg):
                                 left = t("settings_premium_left_months", lang, months=months)
                             else:
                                 left = t("settings_premium_left_days", lang, days=days)
-                            prem_text = t("settings_premium_active", lang, date=prem_until.strftime("%d.%m.%Y"), left=left)
+                            prem_text = t("settings_premium_active", lang,
+                                          date=prem_until.strftime("%d.%m.%Y"), left=left)
                         else:
                             prem_text = t("settings_premium_expired", lang)
 
             settings_text = t('settings_title', lang, name=first_name, premium=prem_text)
-            settings_btns = [[{"text": t('btn_change_language', lang), "callback_data": "settings:language", "style": "primary"}]]
+            settings_btns = [[{"text": t('btn_change_language', lang),
+                                "callback_data": "settings:language", "style": "primary"}]]
             if "❌" in prem_text:
-                settings_btns.insert(0, [{"text": t('btn_premium_buy', lang), "callback_data": "buy_premium", "style": "success"}])
-            settings_markup = {"inline_keyboard": settings_btns}
-            send_message(chat_id, settings_text, reply_markup=settings_markup, reply_to_message_id=user_msg_id)
+                settings_btns.insert(0, [{"text": t('btn_premium_buy', lang),
+                                          "callback_data": "buy_premium", "style": "success"}])
+            send_message(chat_id, settings_text, reply_markup={"inline_keyboard": settings_btns},
+                         reply_to_message_id=user_msg_id)
             return
 
         elif text in ("🎁 Premium сыйлау", "🎁 Подарить Premium"):
             send_chat_action(chat_id, "typing")
-            gift_text = t("gift_menu_text", lang)
             gift_markup = {
                 "inline_keyboard": [
                     [{"text": t("gift_btn_link", lang), "callback_data": "gift_type:link", "style": "success"}],
@@ -206,7 +205,8 @@ def handle_message(msg):
                     [{"text": t("gift_btn_username", lang), "callback_data": "gift_type:username", "style": "success"}]
                 ]
             }
-            bot_msg_id = send_message(chat_id, gift_text, reply_markup=gift_markup, reply_to_message_id=user_msg_id)
+            bot_msg_id = send_message(chat_id, t("gift_menu_text", lang),
+                                      reply_markup=gift_markup, reply_to_message_id=user_msg_id)
             if bot_msg_id:
                 set_message_reaction(chat_id, bot_msg_id, "🤔")
             return
@@ -214,9 +214,9 @@ def handle_message(msg):
         elif text in ("⭐️ Premium алу", "⭐️ Купить Premium"):
             send_chat_action(chat_id, "typing")
             from tariffs import get_tariff_keyboard
-            tariff_text = t("premium_buy_text", lang)
-            # ── ӨЗГЕРІС: lang параметрі қосылды ──────────────────────────
-            send_message(chat_id, tariff_text, reply_markup=get_tariff_keyboard("buy", lang=lang), reply_to_message_id=user_msg_id)
+            send_message(chat_id, t("premium_buy_text", lang),
+                         reply_markup=get_tariff_keyboard("buy", lang=lang),
+                         reply_to_message_id=user_msg_id)
             return
 
         elif text.startswith("/start"):
@@ -227,13 +227,18 @@ def handle_message(msg):
                 success, buyer_name, gift_days = redeem_gift_code(gift_code, chat_id)
                 if success:
                     from tariffs import TARIFFS
-                    gift_label = next((tariff["label_ru"] if lang == "ru" else tariff["label"]
-                                       for tariff in TARIFFS if tariff["days"] == gift_days), f"{gift_days} күн")
+                    gift_label = next(
+                        (tariff["label_ru"] if lang == "ru" else tariff["label"]
+                         for tariff in TARIFFS if tariff["days"] == gift_days),
+                        f"{gift_days} күн"
+                    )
                     gift_msg = t("gift_received", lang, buyer=buyer_name, label=gift_label)
                     bot_msg_id = send_message(chat_id, gift_msg, reply_markup=_main_keyboard(lang),
-                                              reply_to_message_id=user_msg_id, message_effect_id=EFFECT_HALAL)
+                                              reply_to_message_id=user_msg_id,
+                                              message_effect_id=EFFECT_HALAL)
                     set_message_reaction(chat_id, user_msg_id, "❤")
-                    if bot_msg_id: set_message_reaction(chat_id, bot_msg_id, "🎉")
+                    if bot_msg_id:
+                        set_message_reaction(chat_id, bot_msg_id, "🎉")
                     add_user(chat_id, first_name, username)
                     save_chat_history(chat_id, "user", text)
                     save_chat_history(chat_id, "model", gift_msg)
@@ -249,10 +254,14 @@ def handle_message(msg):
                     send_message(chat_id, err_msg, reply_to_message_id=user_msg_id)
 
             if is_symbat:
-                welcome_text = f"Сәлем, Ботам! ❤️\n\nБұл сенің сүйікті жігітің жасаған ҚМДБ Халал боты ғой. Маған кез келген өнімнің атын жаз немесе суретін жібер, мен сен үшін бәрін тауып беремін! 😘"
-                bot_msg_id = send_message(chat_id, welcome_text, reply_markup=_main_keyboard(lang), reply_to_message_id=user_msg_id)
+                welcome_text = ("Сәлем, Ботам! ❤️\n\nБұл сенің сүйікті жігітің жасаған ҚМДБ Халал боты ғой. "
+                                "Маған кез келген өнімнің атын жаз немесе суретін жібер, "
+                                "мен сен үшін бәрін тауып беремін! 😘")
+                bot_msg_id = send_message(chat_id, welcome_text, reply_markup=_main_keyboard(lang),
+                                          reply_to_message_id=user_msg_id)
                 set_message_reaction(chat_id, user_msg_id, "❤")
-                if bot_msg_id: set_message_reaction(chat_id, bot_msg_id, "❤")
+                if bot_msg_id:
+                    set_message_reaction(chat_id, bot_msg_id, "❤")
                 add_user(chat_id, first_name, username)
                 save_chat_history(chat_id, "user", text)
                 save_chat_history(chat_id, "model", welcome_text)
@@ -265,13 +274,18 @@ def handle_message(msg):
                         if success:
                             delete_pending_gift(username)
                             from tariffs import TARIFFS
-                            gift_label = next((tariff["label_ru"] if lang == "ru" else tariff["label"]
-                                               for tariff in TARIFFS if tariff["days"] == gift_days), f"{gift_days} күн")
+                            gift_label = next(
+                                (tariff["label_ru"] if lang == "ru" else tariff["label"]
+                                 for tariff in TARIFFS if tariff["days"] == gift_days),
+                                f"{gift_days} күн"
+                            )
                             gift_msg = t("gift_pending_received", lang, buyer=buyer_name, label=gift_label)
                             bot_msg_id = send_message(chat_id, gift_msg, reply_markup=_main_keyboard(lang),
-                                                      reply_to_message_id=user_msg_id, message_effect_id=EFFECT_HALAL)
+                                                      reply_to_message_id=user_msg_id,
+                                                      message_effect_id=EFFECT_HALAL)
                             set_message_reaction(chat_id, user_msg_id, "❤")
-                            if bot_msg_id: set_message_reaction(chat_id, bot_msg_id, "🎉")
+                            if bot_msg_id:
+                                set_message_reaction(chat_id, bot_msg_id, "🎉")
                             add_user(chat_id, first_name, username)
                             save_chat_history(chat_id, "user", text)
                             save_chat_history(chat_id, "model", gift_msg)
@@ -280,18 +294,19 @@ def handle_message(msg):
 
                 current_gender = get_user_gender(chat_id)
                 if not current_gender:
-                    lang_text = t('choose_language', 'kz')
                     lang_markup = {"inline_keyboard": [[
                         {"text": "🇰🇿 Қазақша", "callback_data": "lang:kz", "style": "primary"},
                         {"text": "🇷🇺 Русский", "callback_data": "lang:ru", "style": "primary"}
                     ]]}
-                    send_message(chat_id, lang_text, reply_markup=lang_markup, reply_to_message_id=user_msg_id)
+                    send_message(chat_id, t('choose_language', 'kz'),
+                                 reply_markup=lang_markup, reply_to_message_id=user_msg_id)
                     add_user(chat_id, first_name, username)
                     save_chat_history(chat_id, "user", text)
                     log_to_bigquery(chat_id, "start", "/start", "Жаңа қолданушы (Тіл сұралды)")
                 else:
                     welcome_text = t('welcome_back', lang, name=first_name)
-                    send_message(chat_id, welcome_text, reply_markup=_main_keyboard(lang), reply_to_message_id=user_msg_id)
+                    send_message(chat_id, welcome_text, reply_markup=_main_keyboard(lang),
+                                 reply_to_message_id=user_msg_id)
                     save_chat_history(chat_id, "user", text)
                     save_chat_history(chat_id, "model", welcome_text)
                     log_to_bigquery(chat_id, "start", "/start", "Ескі қолданушы")
@@ -325,7 +340,8 @@ def handle_message(msg):
                     {"text": t("btn_bad", lang), "callback_data": "fb:bad:ai", "style": "danger"}
                 ]]}
                 if ai_reply is not None:
-                    bot_msg_id = send_message(chat_id, ai_reply, reply_markup=keys, reply_to_message_id=user_msg_id)
+                    bot_msg_id = send_message(chat_id, ai_reply, reply_markup=keys,
+                                              reply_to_message_id=user_msg_id)
                     if tier in ["premium", "VIP"] and bot_msg_id:
                         set_message_reaction(chat_id, bot_msg_id, "👨‍💻")
                 save_chat_history(chat_id, "user", text)
@@ -335,8 +351,11 @@ def handle_message(msg):
                 increment_usage(chat_id)
                 return
 
+            # ── БІРІНШІ ІЗДЕУ ────────────────────────────────────────────────
             found_items = search_data(search_query)
+
             if found_items:
+                # Базадан тікелей табылды ✅
                 has_access, tier = check_access(chat_id, is_symbat)
                 if not has_access:
                     _msg, _markup = _access_denied_msg(lang, tier)
@@ -345,57 +364,14 @@ def handle_message(msg):
                     return
 
                 send_chat_action(chat_id, "typing")
-                if len(found_items) == 1:
-                    confidence = found_items[0].get('confidence', 'exact')
-                    reply_text, markup = format_detail_message(found_items[0], confidence=confidence, query_text=text, lang=lang)
-                    effect = None
-                    reaction = None
-                    if tier in ["premium", "VIP"]:
-                        status_text = found_items[0].get("status", "")
-                        if "Белсенді" in status_text or "Рұқсат" in status_text:
-                            effect = EFFECT_HALAL
-                            reaction = "🎉"
-                        elif "Мерзімі" in status_text or "⚠️" in status_text or "Қайтарып" in status_text or "🚫" in status_text:
-                            effect = EFFECT_EXPIRED
-                            reaction = "👎"
-                        elif confidence == 'fuzzy':
-                            reaction = "🤔"
+                _send_search_results(chat_id, user_msg_id, found_items, text, lang, tier,
+                                     log_action="text_search")
+                increment_usage(chat_id)
 
-                    image_url = found_items[0].get("image_url", "")
-                    if image_url:
-                        bot_msg_id = send_photo_message(chat_id, image_url, reply_text,
-                                                        reply_markup=markup, message_effect_id=effect,
-                                                        reply_to_message_id=user_msg_id)
-                    else:
-                        bot_msg_id = send_message(chat_id, reply_text, reply_markup=markup,
-                                                  message_effect_id=effect, reply_to_message_id=user_msg_id)
-                    if reaction and bot_msg_id:
-                        set_message_reaction(chat_id, bot_msg_id, reaction)
-                    save_chat_history(chat_id, "user", text)
-                    save_chat_history(chat_id, "model", reply_text)
-                    log_to_bigquery(chat_id, "text_search", text, f"Табылды (1/{confidence})",
-                                    is_premium=(tier in ["premium", "VIP"]), result_count=1, confidence=confidence)
-                    increment_usage(chat_id)
-                else:
-                    exact_items = [i for i in found_items if i.get('confidence') == 'exact']
-                    fuzzy_items = [i for i in found_items if i.get('confidence') == 'fuzzy']
-                    all_items = exact_items + fuzzy_items
-                    total = len(all_items)
-                    per_page = 5
-                    page = 1
-                    from db_core import save_search_session
-                    session_id = save_search_session(chat_id, all_items)
-                    reply_text, keyboard = _build_search_results_page(all_items, page, per_page, session_id=session_id, lang=lang)
-                    bot_msg_id = send_message(chat_id, reply_text, reply_markup={"inline_keyboard": keyboard},
-                                              reply_to_message_id=user_msg_id)
-                    if tier in ["premium", "VIP"] and bot_msg_id:
-                        set_message_reaction(chat_id, bot_msg_id, "🤔")
-                    save_chat_history(chat_id, "user", text)
-                    save_chat_history(chat_id, "model", reply_text)
-                    log_to_bigquery(chat_id, "text_search", text, f"Табылды (Көп/{total})",
-                                    is_premium=(tier in ["premium", "VIP"]), result_count=total)
-                    increment_usage(chat_id)
             else:
+                # ── AI #1: Іздеу терминін нормализациялау ────────────────────
+                # Базадан табылмады → AI сұраудан нақты атауды шығарады
+                # Мысалы: "Мексиси" → "Mexxi"
                 has_access, tier = check_access(chat_id, is_symbat)
                 if not has_access:
                     _msg, _markup = _access_denied_msg(lang, tier)
@@ -403,68 +379,147 @@ def handle_message(msg):
                     return
 
                 send_chat_action(chat_id, "typing")
-                if tier in ["premium", "VIP"]:
-                    ai_loading_reaction = random.choice(["✍", "👨‍💻"])
-                    set_message_reaction(chat_id, user_msg_id, ai_loading_reaction)
-                ai_reply = chat_with_ai(chat_id, text, is_symbat, chat_id=chat_id, message_id=user_msg_id)
-                keys = {"inline_keyboard": [[
-                    {"text": t("btn_good", lang), "callback_data": "fb:good:ai", "style": "success"},
-                    {"text": t("btn_bad", lang), "callback_data": "fb:bad:ai", "style": "danger"}
-                ]]}
-                if ai_reply is not None:
-                    bot_msg_id = send_message(chat_id, ai_reply, reply_markup=keys, reply_to_message_id=user_msg_id)
-                    if tier in ["premium", "VIP"] and bot_msg_id:
-                        set_message_reaction(chat_id, bot_msg_id, "👨‍💻")
-                save_chat_history(chat_id, "user", text)
-                save_chat_history(chat_id, "model", ai_reply or "")
-                log_to_bigquery(chat_id, "ai_chat", text, "Табылмады/AI жауап берді",
-                                is_premium=(tier in ["premium", "VIP"]), result_count=0)
-                increment_usage(chat_id)
+                normalized_query = extract_search_term(search_query)
+                second_found = []
+
+                if normalized_query:
+                    print(f"[AI#1] '{search_query}' → '{normalized_query}'")
+                    second_found = search_data(normalized_query)
+
+                if second_found:
+                    # Нормализациямен табылды ✅
+                    if tier in ["premium", "VIP"]:
+                        set_message_reaction(chat_id, user_msg_id, "🎉")
+                    _send_search_results(chat_id, user_msg_id, second_found, text, lang, tier,
+                                         log_action="text_search_normalized",
+                                         log_status=f"AI нормализациямен: {normalized_query}")
+                    increment_usage(chat_id)
+
+                else:
+                    # ── AI #2: Қатаң "табылмады" жауабы ─────────────────────
+                    # Екі рет іздеп те табылмады → AI "базада жоқ" деп айтады
+                    # Өзінен ештеңе ОЙЛАП ШЫҚПАЙДЫ
+                    if tier in ["premium", "VIP"]:
+                        set_message_reaction(chat_id, user_msg_id, "😔")
+
+                    not_found_reply = get_not_found_reply(search_query, normalized_query, lang=lang)
+                    keys = {"inline_keyboard": [[
+                        {"text": t("btn_good", lang), "callback_data": "fb:good:ai", "style": "success"},
+                        {"text": t("btn_bad", lang), "callback_data": "fb:bad:ai", "style": "danger"}
+                    ]]}
+                    send_message(chat_id, not_found_reply, reply_markup=keys,
+                                 reply_to_message_id=user_msg_id)
+                    save_chat_history(chat_id, "user", text)
+                    save_chat_history(chat_id, "model", not_found_reply)
+                    log_to_bigquery(chat_id, "not_found", text,
+                                    f"Табылмады (normalized: {normalized_query})",
+                                    is_premium=(tier in ["premium", "VIP"]), result_count=0)
+                    increment_usage(chat_id)
+
+
+# ── ІЗДЕУ НӘТИЖЕЛЕРІН ЖІБЕРУ (ортақ хелпер) ───────────────────────────────
+
+def _send_search_results(chat_id, user_msg_id, found_items, original_text, lang, tier,
+                          log_action="text_search", log_status=None):
+    """1 немесе бірнеше нәтижені форматтап жіберетін ортақ функция"""
+    if len(found_items) == 1:
+        confidence = found_items[0].get('confidence', 'exact')
+        reply_text, markup = format_detail_message(found_items[0], confidence=confidence,
+                                                   query_text=original_text, lang=lang)
+        effect = None
+        reaction = None
+        if tier in ["premium", "VIP"]:
+            status_text = found_items[0].get("status", "")
+            if "Белсенді" in status_text or "Рұқсат" in status_text:
+                effect = EFFECT_HALAL
+                reaction = "🎉"
+            elif "Мерзімі" in status_text or "⚠️" in status_text or "Қайтарып" in status_text or "🚫" in status_text:
+                effect = EFFECT_EXPIRED
+                reaction = "👎"
+            elif confidence == 'fuzzy':
+                reaction = "🤔"
+
+        image_url = found_items[0].get("image_url", "")
+        if image_url:
+            bot_msg_id = send_photo_message(chat_id, image_url, reply_text,
+                                            reply_markup=markup, message_effect_id=effect,
+                                            reply_to_message_id=user_msg_id)
+        else:
+            bot_msg_id = send_message(chat_id, reply_text, reply_markup=markup,
+                                      message_effect_id=effect, reply_to_message_id=user_msg_id)
+        if reaction and bot_msg_id:
+            set_message_reaction(chat_id, bot_msg_id, reaction)
+
+        save_chat_history(chat_id, "user", original_text)
+        save_chat_history(chat_id, "model", reply_text)
+        log_to_bigquery(chat_id, log_action, original_text,
+                        log_status or f"Табылды (1/{confidence})",
+                        is_premium=(tier in ["premium", "VIP"]), result_count=1, confidence=confidence)
+    else:
+        exact_items = [i for i in found_items if i.get('confidence') == 'exact']
+        fuzzy_items = [i for i in found_items if i.get('confidence') == 'fuzzy']
+        all_items = exact_items + fuzzy_items
+        from db_core import save_search_session
+        session_id = save_search_session(chat_id, all_items)
+        reply_text, keyboard = _build_search_results_page(all_items, 1, 5,
+                                                          session_id=session_id, lang=lang)
+        bot_msg_id = send_message(chat_id, reply_text,
+                                  reply_markup={"inline_keyboard": keyboard},
+                                  reply_to_message_id=user_msg_id)
+        if tier in ["premium", "VIP"] and bot_msg_id:
+            set_message_reaction(chat_id, bot_msg_id, "🤔")
+        save_chat_history(chat_id, "user", original_text)
+        save_chat_history(chat_id, "model", reply_text)
+        log_to_bigquery(chat_id, log_action, original_text,
+                        log_status or f"Табылды (Көп/{len(all_items)})",
+                        is_premium=(tier in ["premium", "VIP"]), result_count=len(all_items))
 
 
 # ── USERNAME ӨҢДЕУШІЛЕРІ ────────────────────────────────────────────────────
 
 def _handle_username_input(chat_id, user_msg_id, text, lang='kz'):
-    """Пайдаланушы @username жазғанда валидациялау"""
     raw = text.strip()
-    cancel_markup = {
-        "inline_keyboard": [[
-            {"text": "❌ Бас тарту", "callback_data": "gift_username_cancel", "style": "danger"}
-        ]]
-    }
+    cancel_markup = {"inline_keyboard": [[
+        {"text": "❌ Бас тарту", "callback_data": "gift_username_cancel", "style": "danger"}
+    ]]}
     if _has_cyrillic(raw):
-        send_message(chat_id, t("username_cyrillic_error", lang), reply_markup=cancel_markup, reply_to_message_id=user_msg_id)
+        send_message(chat_id, t("username_cyrillic_error", lang),
+                     reply_markup=cancel_markup, reply_to_message_id=user_msg_id)
         return
     if not raw.startswith("@"):
-        send_message(chat_id, t("username_no_at_error", lang, raw=raw), reply_markup=cancel_markup, reply_to_message_id=user_msg_id)
+        send_message(chat_id, t("username_no_at_error", lang, raw=raw),
+                     reply_markup=cancel_markup, reply_to_message_id=user_msg_id)
         return
     if not USERNAME_RE.match(raw):
-        send_message(chat_id, t("username_format_error", lang, raw=raw), reply_markup=cancel_markup, reply_to_message_id=user_msg_id)
+        send_message(chat_id, t("username_format_error", lang, raw=raw),
+                     reply_markup=cancel_markup, reply_to_message_id=user_msg_id)
         return
 
     clean = raw.lstrip("@")
     set_confirm_username(chat_id, clean)
-    confirm_text = t("username_confirm_text", lang, clean=clean)
     confirm_markup = {
         "inline_keyboard": [
-            [{"text": t("username_confirm_yes", lang, clean=clean), "callback_data": f"gift_username_confirm:{clean}", "style": "success"}],
-            [{"text": t("username_confirm_no", lang), "callback_data": "gift_username_retry", "style": "primary"}],
-            [{"text": t("btn_cancel", lang), "callback_data": "gift_username_cancel", "style": "danger"}]
+            [{"text": t("username_confirm_yes", lang, clean=clean),
+              "callback_data": f"gift_username_confirm:{clean}", "style": "success"}],
+            [{"text": t("username_confirm_no", lang),
+              "callback_data": "gift_username_retry", "style": "primary"}],
+            [{"text": t("btn_cancel", lang),
+              "callback_data": "gift_username_cancel", "style": "danger"}]
         ]
     }
-    send_message(chat_id, confirm_text, reply_markup=confirm_markup, reply_to_message_id=user_msg_id)
+    send_message(chat_id, t("username_confirm_text", lang, clean=clean),
+                 reply_markup=confirm_markup, reply_to_message_id=user_msg_id)
 
 def _handle_username_confirm(chat_id, user_msg_id, text, lang='kz'):
-    """Растау күтіп тұрғанда қайта мәтін жазса — ескерту"""
     pending = get_pending_username(chat_id)
     if pending:
-        send_message(chat_id, t("username_pending", lang, pending=pending), reply_to_message_id=user_msg_id)
+        send_message(chat_id, t("username_pending", lang, pending=pending),
+                     reply_to_message_id=user_msg_id)
 
 
 # ── ІЗДЕУ НӘТИЖЕЛЕРІ ПАГИНАЦИЯСЫ ───────────────────────────────────────────
 
 def _build_search_results_page(all_items, page, per_page, session_id=None, query_text="", lang="kz"):
-    """Іздеу нәтижелерін беттеп шығару"""
     import math
     total = len(all_items)
     total_pages = math.ceil(total / per_page)
@@ -498,14 +553,17 @@ def _build_search_results_page(all_items, page, per_page, session_id=None, query
             btn_style = "danger"
         else:
             btn_style = "primary"
-        keyboard.append([{"text": f"{idx}. {prefix}«{item['title']}»", "callback_data": f"itm:{t_code}:{item['id']}", "style": btn_style}])
+        keyboard.append([{"text": f"{idx}. {prefix}«{item['title']}»",
+                          "callback_data": f"itm:{t_code}:{item['id']}", "style": btn_style}])
 
     if session_id:
         nav = []
         if page > 1:
-            nav.append({"text": t("btn_back", lang), "callback_data": f"srch:{page-1}:{session_id}", "style": "primary"})
+            nav.append({"text": t("btn_back", lang),
+                        "callback_data": f"srch:{page-1}:{session_id}", "style": "primary"})
         if page < total_pages:
-            nav.append({"text": t("btn_next", lang), "callback_data": f"srch:{page+1}:{session_id}", "style": "primary"})
+            nav.append({"text": t("btn_next", lang),
+                        "callback_data": f"srch:{page+1}:{session_id}", "style": "primary"})
         if nav:
             keyboard.append(nav)
 
