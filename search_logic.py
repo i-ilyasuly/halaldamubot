@@ -46,7 +46,7 @@ def get_nearby_companies(user_lat, user_lon, page=1, lang="kz"):
         if coords:
             c_lat, c_lon = coords
             dist = get_distance(user_lat, user_lon, c_lat, c_lon)
-            if dist <= 50:
+            if dist <= 10:
                 cat = ""
                 raw_cat = c.get("categories") or c.get("category", "")
                 if isinstance(raw_cat, list) and raw_cat:
