@@ -19,7 +19,7 @@ def handle_inline(inline_query):
     # --- ЖАҢА: СЫЙЛЫҚ ҚОРАБЫН ИНЛАЙН ЖІБЕРУ ---
     if query_text.startswith("giftbox_"):
         gift_code = query_text.replace("giftbox_", "")
-        bot_username = "alladalbot"
+        bot_username = "halaldamu_bot"
 
         # Firestore-дан тариф атауын аламыз
         gift_label_kz = "30 күн"
