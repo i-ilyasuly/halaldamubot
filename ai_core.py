@@ -8,7 +8,7 @@ from config import GEMINI_API_KEY, BUCKET_NAME, SUSPICIOUS_FOLDER
 from db_core import get_chat_history
 from search_logic import search_data
 from formatters import format_detail_message
-from bot_sender import edit_message, send_message_draft
+from bot_sender import edit_message
 
 genai.configure(api_key=GEMINI_API_KEY)
 storage_client = storage.Client()
@@ -52,7 +52,7 @@ def extract_search_term(text):
     МАҢЫЗДЫ: Бұл функция тек іздеу үшін атауды шығарады.
     Өнімнің халал/харам екені туралы ЕШТЕҢЕ айтпайды.
     """
-    model = genai.GenerativeModel('gemini-2.0-flash-lite')
+    model = genai.GenerativeModel('gemini-3.1-flash-lite-preview')
     prompt = f"""Сен халал тексеру боты үшін іздеу сұрауын өңдейсің.
 
 МІНДЕТ: Берілген мәтіннен өнім немесе мекеме атауын тауып, оны ЛАТЫН ӘРІПТЕРІМЕН дұрыс жаз.
@@ -220,16 +220,27 @@ def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None):
             except Exception as stream_error:
                 print(f"[chat_with_ai] Streaming қатесі: {stream_error}")
                 if full_text:
+                    # Жартылай мәтін бар — соны жіберемін
                     if placeholder_id:
                         edit_message(chat_id, placeholder_id, format_ai_text(full_text))
                     return None
-                return format_ai_text(full_text)
+                else:
+                    # Мүлдем ештеңе жоқ — қате хабар жіберемін
+                    if placeholder_id:
+                        edit_message(chat_id, placeholder_id,
+                                     "Кешіріңіз, жауап алу кезінде іркіліс болды. Қайта сұрап көресіз бе? 🔄")
+                    return None
 
             if full_text:
                 if placeholder_id:
                     edit_message(chat_id, placeholder_id, format_ai_text(full_text))
                 return None
-            return format_ai_text(full_text)
+            else:
+                # Streaming аяқталды бірақ мәтін жоқ
+                if placeholder_id:
+                    edit_message(chat_id, placeholder_id,
+                                 "Кешіріңіз, жауап алу кезінде іркіліс болды. Қайта сұрап көресіз бе? 🔄")
+                return None
         else:
             response = chat.send_message(full_prompt)
             return format_ai_text(response.text)
