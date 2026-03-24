@@ -69,7 +69,7 @@ def process_successful_payment(message):
         from tariffs import get_tariff_by_id
         t_info = get_tariff_by_id(tariff_id) or {"label": "30 күн", "days": 30}
         code = create_gift_code(chat_id, buyer_name, tariff_id=tariff_id)
-        bot_username = "alladalbot"
+        bot_username = "halaldamu_bot"
         gift_link = f"https://t.me/{bot_username}?start={code}"
         success_text = t("payment_gift_link", lang, label=t_info["label"], link=gift_link)
         send_message(chat_id, success_text, message_effect_id="5046509860389126442")
@@ -104,7 +104,7 @@ def process_successful_payment(message):
         if not buyer_name:
             buyer_name = username
 
-        bot_username = "alladalbot"
+        bot_username = "halaldamu-bot"
         recipient_id = get_telegram_user_id_by_username(recipient_username)
         direct_sent = False
 
