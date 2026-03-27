@@ -52,7 +52,7 @@ def extract_search_term(text):
     МАҢЫЗДЫ: Бұл функция тек іздеу үшін атауды шығарады.
     Өнімнің халал/харам екені туралы ЕШТЕҢЕ айтпайды.
     """
-    model = genai.GenerativeModel('gemini-3.1-flash-lite-preview')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     prompt = f"""Сен халал тексеру боты үшін іздеу сұрауын өңдейсің.
 
 МІНДЕТ: Берілген мәтіннен өнім немесе мекеме атауын тауып, оны ЛАТЫН ӘРІПТЕРІМЕН дұрыс жаз.
@@ -85,7 +85,10 @@ def extract_search_term(text):
 Жауап (тек атау):"""
 
     try:
-        response = model.generate_content(prompt)
+        response = model.generate_content(
+                    prompt,
+                    request_options={"timeout": 10}
+                )
         result = response.text.strip().strip('"\'').strip()
         if not result or result == "GENERAL" or len(result) > 60:
             return None
@@ -145,7 +148,10 @@ def get_not_found_reply(original_query, normalized_query, lang='kz'):
 
     try:
         full_prompt = f"НҰСҚАУЛЫҚ: {system}\n\nСҰРАУ: {user_msg}"
-        response = model.generate_content(full_prompt)
+        response = model.generate_content(
+                    full_prompt,
+                    request_options={"timeout": 10}
+                )
         return format_ai_text(response.text)
     except Exception as e:
         print(f"[get_not_found_reply] Қате: {e}")
@@ -251,7 +257,7 @@ def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None):
 
 
 def process_image_with_ai(image_bytes):
-    model = genai.GenerativeModel('gemini-3.1-flash-lite-preview')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     image_parts = [{"mime_type": "image/jpeg", "data": image_bytes}]
     prompt = """
 Сен өте мұқият сарапшысың. Мына суретке қарап, ТЕК ҚАНА АЛДЫҢҒЫ ПЛАНДАҒЫ (фокустағы) негізгі өнімді анықта. Артқы фондағы немесе шеттегі басқа өнімдерді елеме.
@@ -267,7 +273,10 @@ def process_image_with_ai(image_bytes):
 {"product_names":["Басты_бренд", "Өндіруші"]}
 """
     try:
-        response = model.generate_content([prompt, image_parts[0]])
+        response = model.generate_content(
+                    [prompt, image_parts[0]],
+                    request_options={"timeout": 20}
+                )
         result_text = clean_json_string(response.text)
         return json.loads(result_text)
     except Exception as e:
@@ -304,7 +313,7 @@ def handle_photo(image_bytes, chat_id, username, lang="kz"):
 
     if all_found_items:
         if len(all_found_items) == 1:
-            text, markup = format_detail_message(all_found_items[0], confidence='exact', lang=lang)
+            text, markup = format_detail_message(all_found_items[0], confidence=all_found_items[0].get('confidence', 'exact'), query_text=product_names[0], lang=lang)
             from translations import t
             final_text = t("photo_recognized", lang, name=product_names[0]) + text
             return final_text, markup, all_found_items[0].get("image_url", "")
@@ -342,7 +351,7 @@ def handle_photo(image_bytes, chat_id, username, lang="kz"):
         if second_found:
             # Нормализациямен табылды ✅
             if len(second_found) == 1:
-                text, markup = format_detail_message(second_found[0], confidence='exact', lang=lang)
+                text, markup = format_detail_message(second_found[0], confidence=second_found[0].get('confidence', 'exact'), query_text=original_name, lang=lang)
                 from translations import t
                 final_text = t("photo_recognized", lang, name=original_name) + text
                 return final_text, markup, second_found[0].get("image_url", "")
