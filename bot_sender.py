@@ -3,7 +3,8 @@ from config import BOT_TOKEN
 
 def send_message(chat_id, text, reply_markup=None, message_effect_id=None, reply_to_message_id=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+               "link_preview_options": {"is_disabled": True}}
     
     if reply_markup: 
         payload["reply_markup"] = reply_markup
@@ -85,7 +86,8 @@ def send_photo_message(chat_id, photo_url, caption, reply_markup=None,
 
 def edit_message(chat_id=None, message_id=None, text=None, reply_markup=None, inline_message_id=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-    payload = {"text": text, "parse_mode": "HTML"}
+    payload = {"text": text, "parse_mode": "HTML",
+               "link_preview_options": {"is_disabled": True}}
     if inline_message_id:
         payload["inline_message_id"] = inline_message_id
     else:
