@@ -94,7 +94,14 @@ def handle_message(msg):
         photo_id = msg["photo"][-1]["file_id"]
         image_bytes = download_photo(photo_id)
         if image_bytes:
-            result_msg, markup, item_image_url = handle_photo(image_bytes, chat_id, username, lang=lang)
+            try:
+                result_msg, markup, item_image_url = handle_photo(image_bytes, chat_id, username, lang=lang)
+            except Exception as e:
+                print(f"[handle_message] handle_photo қате: {e}")
+                result_msg = t("photo_error", lang)
+                markup = None
+                item_image_url = ""
+
             effect = None
             reaction = None
             if tier in ["premium", "VIP"]:
@@ -415,29 +422,61 @@ def handle_message(msg):
                     increment_usage(chat_id)
 
                 else:
-                    # ── AI #2: Қатаң "табылмады" жауабы ─────────────────────
-                    # Екі рет іздеп те табылмады → AI "базада жоқ" деп айтады
-                    # Өзінен ештеңе ОЙЛАП ШЫҚПАЙДЫ
-                    if tier in ["premium", "VIP"]:
-                        set_message_reaction(chat_id, user_msg_id, "😔")
+                    # ── 4D: CLASSIFY → chat па, search па? ───────────────────
+                    # Екі рет іздеп те табылмады.
+                    # Енді classify_query арқылы тексереміз:
+                    #   "сәлем", "қалайсың" → chat → chat_with_ai()
+                    #   "тағам" (базада жоқ) → search → AI#2 not_found
+                    print(f"[4D] Табылмады, classify_query шақырылады: '{text}'")
+                    classify_action, _ = classify_query(text)
 
-                    not_found_reply = get_not_found_reply(search_query, normalized_query, lang=lang)
-                    if tier in ["premium", "VIP"]:
-                        quote = get_quote("not_found", lang)
-                        if quote:
-                            not_found_reply += f"\n\n{quote}"
-                    keys = {"inline_keyboard": [[
-                        {"text": t("btn_good", lang), "callback_data": "fb:good:ai", "style": "success"},
-                        {"text": t("btn_bad", lang), "callback_data": "fb:bad:ai", "style": "danger"}
-                    ]]}
-                    send_message(chat_id, not_found_reply, reply_markup=keys,
-                                 reply_to_message_id=user_msg_id)
-                    save_chat_history(chat_id, "user", text)
-                    save_chat_history(chat_id, "model", not_found_reply)
-                    log_to_bigquery(chat_id, "not_found", text,
-                                    f"Табылмады (normalized: {normalized_query})",
-                                    is_premium=(tier in ["premium", "VIP"]), result_count=0)
-                    increment_usage(chat_id)
+                    if classify_action == "chat":
+                        # ── ЧАТ РЕЖИМІ ───────────────────────────────────────
+                        print(f"[4D] classify=chat → chat_with_ai()")
+                        send_chat_action(chat_id, "typing")
+                        if tier in ["premium", "VIP"]:
+                            set_message_reaction(chat_id, user_msg_id, random.choice(["✍", "👨‍💻"]))
+                        ai_reply = chat_with_ai(chat_id, text, is_symbat,
+                                                chat_id=chat_id, message_id=user_msg_id)
+                        keys = {"inline_keyboard": [[
+                            {"text": t("btn_good", lang), "callback_data": "fb:good:ai", "style": "success"},
+                            {"text": t("btn_bad", lang), "callback_data": "fb:bad:ai", "style": "danger"}
+                        ]]}
+                        if ai_reply is not None:
+                            bot_msg_id = send_message(chat_id, ai_reply, reply_markup=keys,
+                                                      reply_to_message_id=user_msg_id)
+                            if tier in ["premium", "VIP"] and bot_msg_id:
+                                set_message_reaction(chat_id, bot_msg_id, "👨‍💻")
+                        save_chat_history(chat_id, "user", text)
+                        save_chat_history(chat_id, "model", ai_reply or "")
+                        log_to_bigquery(chat_id, "ai_chat", text, "4D: classify→chat",
+                                        is_premium=(tier in ["premium", "VIP"]), result_count=0)
+                        increment_usage(chat_id)
+
+                    else:
+                        # ── AI #2: Қатаң "табылмады" жауабы ─────────────────
+                        # classify=search, бірақ базада жоқ → "базадан табылмады"
+                        print(f"[4D] classify=search → get_not_found_reply()")
+                        if tier in ["premium", "VIP"]:
+                            set_message_reaction(chat_id, user_msg_id, "😔")
+
+                        not_found_reply = get_not_found_reply(search_query, normalized_query, lang=lang)
+                        if tier in ["premium", "VIP"]:
+                            quote = get_quote("not_found", lang)
+                            if quote:
+                                not_found_reply += f"\n\n{quote}"
+                        keys = {"inline_keyboard": [[
+                            {"text": t("btn_good", lang), "callback_data": "fb:good:ai", "style": "success"},
+                            {"text": t("btn_bad", lang), "callback_data": "fb:bad:ai", "style": "danger"}
+                        ]]}
+                        send_message(chat_id, not_found_reply, reply_markup=keys,
+                                     reply_to_message_id=user_msg_id)
+                        save_chat_history(chat_id, "user", text)
+                        save_chat_history(chat_id, "model", not_found_reply)
+                        log_to_bigquery(chat_id, "not_found", text,
+                                        f"4D: classify→search, табылмады (normalized: {normalized_query})",
+                                        is_premium=(tier in ["premium", "VIP"]), result_count=0)
+                        increment_usage(chat_id)
 
 
 # ── ІЗДЕУ НӘТИЖЕЛЕРІН ЖІБЕРУ (ортақ хелпер) ───────────────────────────────
