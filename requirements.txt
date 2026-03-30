@@ -6,3 +6,4 @@ python-Levenshtein==0.25.0
 google-generativeai
 google-cloud-storage
 google-cloud-bigquery
+google-cloud-vision
