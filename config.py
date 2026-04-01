@@ -17,3 +17,5 @@ GEMINI_API_KEY = "AIzaSyCaMFQZbuhb2xzBdzRq3K6jEaYF2u83PkU"
 # Cloud Storage (Суреттер сақталатын шелек)
 BUCKET_NAME = "momyn-vision-assets"
 SUSPICIOUS_FOLDER = "audit_suspicious/"
+
+ADMIN_TELEGRAM_ID = 123456789
