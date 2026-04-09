@@ -1,7 +1,7 @@
 import re
 import random
 import requests as _requests
-from bot_sender import send_message, send_photo_message, edit_message, send_chat_action, download_photo, set_message_reaction, send_invoice, send_gift_invoice
+from bot_sender import send_message, send_photo_message, edit_message, send_chat_action, download_photo, set_message_reaction, send_invoice, send_gift_invoice, delete_message
 from db_core import (add_user, save_chat_history, log_to_bigquery, check_access,
                      increment_usage, revoke_premium, get_user_gender, redeem_gift_code,
                      get_pending_gift_for_username, delete_pending_gift, grant_premium,
@@ -17,6 +17,18 @@ from gift_state import (set_awaiting_username, is_awaiting_username,
                         set_confirm_username, get_pending_username, clear_state)
 
 SYMBAT_ID = 1042456426
+
+# Бот жұмыс істеп жатқан кезде көрсетілетін placeholder эмодзилер.
+# Үлкен (jumbo) эмодзи ретінде көрінеді — қолданушы боттың ойланып
+# жатқанын көреді, "тоқтап қалды" деп ойламайды.
+LOADING_EMOJIS = ["🔬", "👀", "🤔", "✨", "🔍"]
+
+
+def _send_placeholder(chat_id, user_msg_id):
+    """Іздеу/AI жұмыс кезінде placeholder ретінде кездейсоқ үлкен эмодзи жіберу."""
+    emoji = random.choice(LOADING_EMOJIS)
+    return send_message(chat_id, emoji, reply_to_message_id=user_msg_id)
+
 
 def _get_city(lat, lon):
     try:
@@ -86,9 +98,7 @@ def handle_message(msg):
 
         clear_state(chat_id)
         send_chat_action(chat_id, "typing")
-        if tier in ["premium", "VIP"]:
-            loading_reaction = random.choice(["🤔", "👀", "⚡", "🤓", "👨‍💻"])
-            set_message_reaction(chat_id, user_msg_id, loading_reaction)
+        placeholder_id = _send_placeholder(chat_id, user_msg_id)
 
         photo_id = msg["photo"][-1]["file_id"]
         image_bytes = download_photo(photo_id)
@@ -113,6 +123,10 @@ def handle_message(msg):
                 else:
                     reaction = "🤔"
 
+            # Placeholder-ді нәтижеден бұрын жоямыз — эффект жаңа хабарламада ойнау үшін
+            if placeholder_id:
+                delete_message(chat_id, placeholder_id)
+
             if item_image_url:
                 bot_msg_id = send_photo_message(chat_id, item_image_url, result_msg,
                                                 reply_markup=markup, message_effect_id=effect,
@@ -127,6 +141,10 @@ def handle_message(msg):
             log_to_bigquery(chat_id, "photo_search", "Сурет", "Тексерілді",
                             is_premium=(tier in ["premium", "VIP"]))
             increment_usage(chat_id)
+        else:
+            # Сурет жүктелмеді — placeholder-ді жою (қалдырмау)
+            if placeholder_id:
+                delete_message(chat_id, placeholder_id)
 
     elif "location" in msg:
         has_access, tier = check_access(chat_id, is_symbat)
@@ -307,6 +325,13 @@ def handle_message(msg):
                     log_to_bigquery(chat_id, "start", "/start", "Ескі қолданушы")
 
         else:
+            # ── PLACEHOLDER ──────────────────────────────────────────────────
+            # Жұмысты бастамас бұрын үлкен эмодзи placeholder жіберіп қоямыз.
+            # Қолданушы боттың "ойланып" жатқанын көреді. Әр тармақта нәтиже
+            # жіберілмес бұрын немесе access denied болғанда жойылады.
+            send_chat_action(chat_id, "typing")
+            placeholder_id = _send_placeholder(chat_id, user_msg_id)
+
             # ── КЛАССИФИКАТОР ────────────────────────────────────────────────
             search_query = text
             go_to_chat = False
@@ -321,15 +346,16 @@ def handle_message(msg):
             if go_to_chat:
                 has_access, tier = check_access(chat_id, is_symbat)
                 if not has_access:
+                    if placeholder_id:
+                        delete_message(chat_id, placeholder_id)
                     _msg, _markup = _access_denied_msg(lang, tier)
                     log_to_bigquery(chat_id, "limit_hit", "ai_chat", "Лимит бітті")
                     send_message(chat_id, _msg, reply_markup=_markup, reply_to_message_id=user_msg_id)
                     return
 
-                send_chat_action(chat_id, "typing")
-                if tier in ["premium", "VIP"]:
-                    set_message_reaction(chat_id, user_msg_id, random.choice(["✍", "👨‍💻"]))
-                ai_reply = chat_with_ai(chat_id, text, is_symbat, chat_id=chat_id, message_id=user_msg_id)
+                ai_reply = chat_with_ai(chat_id, text, is_symbat,
+                                        chat_id=chat_id, message_id=user_msg_id,
+                                        placeholder_id=placeholder_id)
                 keys = {"inline_keyboard": [[
                     {"text": t("btn_good", lang), "callback_data": "fb:good:ai", "style": "success"},
                     {"text": t("btn_bad", lang), "callback_data": "fb:bad:ai", "style": "danger"}
@@ -353,14 +379,15 @@ def handle_message(msg):
                 # Базадан тікелей табылды ✅
                 has_access, tier = check_access(chat_id, is_symbat)
                 if not has_access:
+                    if placeholder_id:
+                        delete_message(chat_id, placeholder_id)
                     _msg, _markup = _access_denied_msg(lang, tier)
                     log_to_bigquery(chat_id, "limit_hit", "text_search", "Лимит бітті")
                     send_message(chat_id, _msg, reply_markup=_markup, reply_to_message_id=user_msg_id)
                     return
 
-                send_chat_action(chat_id, "typing")
                 _send_search_results(chat_id, user_msg_id, found_items, text, lang, tier,
-                                     log_action="text_search")
+                                     log_action="text_search", placeholder_id=placeholder_id)
                 increment_usage(chat_id)
 
             else:
@@ -369,11 +396,12 @@ def handle_message(msg):
                 # Мысалы: "Мексиси" → "Mexxi"
                 has_access, tier = check_access(chat_id, is_symbat)
                 if not has_access:
+                    if placeholder_id:
+                        delete_message(chat_id, placeholder_id)
                     _msg, _markup = _access_denied_msg(lang, tier)
                     send_message(chat_id, _msg, reply_markup=_markup, reply_to_message_id=user_msg_id)
                     return
 
-                send_chat_action(chat_id, "typing")
                 normalized_query = extract_search_term(search_query)
                 second_found = []
 
@@ -383,11 +411,10 @@ def handle_message(msg):
 
                 if second_found:
                     # Нормализациямен табылды ✅
-                    if tier in ["premium", "VIP"]:
-                        set_message_reaction(chat_id, user_msg_id, "🎉")
                     _send_search_results(chat_id, user_msg_id, second_found, text, lang, tier,
                                          log_action="text_search_normalized",
-                                         log_status=f"AI нормализациямен: {normalized_query}")
+                                         log_status=f"AI нормализациямен: {normalized_query}",
+                                         placeholder_id=placeholder_id)
                     increment_usage(chat_id)
 
                 else:
@@ -402,11 +429,9 @@ def handle_message(msg):
                     if classify_action == "chat":
                         # ── ЧАТ РЕЖИМІ ───────────────────────────────────────
                         print(f"[4D] classify=chat → chat_with_ai()")
-                        send_chat_action(chat_id, "typing")
-                        if tier in ["premium", "VIP"]:
-                            set_message_reaction(chat_id, user_msg_id, random.choice(["✍", "👨‍💻"]))
                         ai_reply = chat_with_ai(chat_id, text, is_symbat,
-                                                chat_id=chat_id, message_id=user_msg_id)
+                                                chat_id=chat_id, message_id=user_msg_id,
+                                                placeholder_id=placeholder_id)
                         keys = {"inline_keyboard": [[
                             {"text": t("btn_good", lang), "callback_data": "fb:good:ai", "style": "success"},
                             {"text": t("btn_bad", lang), "callback_data": "fb:bad:ai", "style": "danger"}
@@ -426,9 +451,6 @@ def handle_message(msg):
                         # ── AI #2: Қатаң "табылмады" жауабы ─────────────────
                         # classify=search, бірақ базада жоқ → "базадан табылмады"
                         print(f"[4D] classify=search → get_not_found_reply()")
-                        if tier in ["premium", "VIP"]:
-                            set_message_reaction(chat_id, user_msg_id, "😔")
-
                         not_found_reply = get_not_found_reply(search_query, normalized_query, lang=lang)
                         if tier in ["premium", "VIP"]:
                             quote = get_quote("not_found", lang)
@@ -438,6 +460,9 @@ def handle_message(msg):
                             {"text": t("btn_good", lang), "callback_data": "fb:good:ai", "style": "success"},
                             {"text": t("btn_bad", lang), "callback_data": "fb:bad:ai", "style": "danger"}
                         ]]}
+                        # Placeholder-ді нәтижеден бұрын жоямыз
+                        if placeholder_id:
+                            delete_message(chat_id, placeholder_id)
                         send_message(chat_id, not_found_reply, reply_markup=keys,
                                      reply_to_message_id=user_msg_id)
                         save_chat_history(chat_id, "user", text)
@@ -451,8 +476,11 @@ def handle_message(msg):
 # ── ІЗДЕУ НӘТИЖЕЛЕРІН ЖІБЕРУ (ортақ хелпер) ───────────────────────────────
 
 def _send_search_results(chat_id, user_msg_id, found_items, original_text, lang, tier,
-                          log_action="text_search", log_status=None):
+                          log_action="text_search", log_status=None, placeholder_id=None):
     """1 немесе бірнеше нәтижені форматтап жіберетін ортақ функция"""
+    # Placeholder-ді нәтижеден бұрын жоямыз — жаңа хабарламада эффект ойнау үшін
+    if placeholder_id:
+        delete_message(chat_id, placeholder_id)
     if len(found_items) == 1:
         confidence = found_items[0].get('confidence', 'exact')
         reply_text, markup = format_detail_message(found_items[0], confidence=confidence,

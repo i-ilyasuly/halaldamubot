@@ -216,7 +216,7 @@ def get_not_found_reply(original_query, normalized_query, lang='kz'):
 # CHAT — AI МЕН СӨЙЛЕСУ
 # ════════════════════════════════════════════════════════════════
 
-def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None):
+def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None, placeholder_id=None):
     model = genai.GenerativeModel('gemini-2.5-flash')
 
     if is_symbat:
@@ -315,9 +315,16 @@ def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None):
     try:
         full_prompt = f"НҰСҚАУЛЫҚ (ҚАТАҢ САҚТА): {system_instruction}\n\nҚОЛДАНУШЫНЫҢ СҰРАҒЫ: {text}"
 
-        if chat_id and message_id:
+        if chat_id and (placeholder_id or message_id):
             from bot_sender import send_message as _send_msg
-            placeholder_id = _send_msg(chat_id, "✍️", reply_to_message_id=message_id)
+            import random as _random
+            # Егер placeholder сыртта жасалмаса (тікелей шақыру) — өзіміз жасаймыз
+            if not placeholder_id:
+                placeholder_id = _send_msg(
+                    chat_id,
+                    _random.choice(["🔬", "👀", "🤔", "✨", "🔍"]),
+                    reply_to_message_id=message_id
+                )
             response = chat.send_message(full_prompt, stream=True)
             full_text = ""
             last_edit_time = 0
