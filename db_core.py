@@ -130,34 +130,20 @@ def check_access(user_id, is_symbat):
     if is_symbat:
         return True, "VIP"
 
+    # Бот барлығына тегін — әр пайдаланушы "premium" тиер алады.
+    # Жалғыз шектеу: спам қорғаныс үшін күніне 100 сұрау.
     data = _get_user_data(user_id)  # Firestore емес, кэштен! ✅
-    if not data:
-        return True, "free"
-
     today_str = _now().strftime("%Y-%m-%d")
-
-    prem_until = data.get("premium_until")
-    if prem_until:
-        # Firestore-дан timezone-сыз келуі мүмкін — қауіпсіз түрде тексереміз
-        if isinstance(prem_until, datetime):
-            # timezone жоқ болса UTC деп қабылдаймыз
-            if prem_until.tzinfo is None:
-                prem_until = prem_until.replace(tzinfo=timezone.utc)
-            if prem_until > _now():
-                if data.get("last_search_date") == today_str and data.get("daily_searches", 0) >= 150:
-                    return False, "SPAM_LIMIT"
-                return True, "premium"
-
     last_date = data.get("last_search_date")
     usage = data.get("daily_searches", 0)
 
     if last_date != today_str:
         usage = 0
 
-    if usage >= 5:
-        return False, "LIMIT"
+    if usage >= 100:
+        return False, "SPAM_LIMIT"
 
-    return True, "free"
+    return True, "premium"
 
 def increment_usage(user_id):
     doc_ref = db.collection("users").document(str(user_id))

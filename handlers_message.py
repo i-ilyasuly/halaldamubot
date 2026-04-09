@@ -54,7 +54,6 @@ def _main_keyboard(lang='kz'):
     return {
         "keyboard": [
             [{"text": t('btn_location', lang), "request_location": True}],
-            [{"text": t('btn_premium_buy', lang)}, {"text": t('btn_premium_gift', lang)}],
             [{"text": t('btn_settings', lang)}]
         ],
         "resize_keyboard": True
@@ -170,40 +169,10 @@ def handle_message(msg):
         # ── БАТЫРМАЛАР ─────────────────────────────────────────────────────
         if text in ("⚙️ Баптаулар", "⚙️ Настройки"):
             send_chat_action(chat_id, "typing")
-            from db_core import db, _now
-            from datetime import timezone
-            doc = db.collection("users").document(str(chat_id)).get()
-            prem_text = t("settings_no_premium", lang)
-            if doc.exists:
-                prem_until = doc.to_dict().get("premium_until")
-                if prem_until:
-                    from datetime import datetime
-                    if isinstance(prem_until, datetime):
-                        if prem_until.tzinfo is None:
-                            prem_until = prem_until.replace(tzinfo=timezone.utc)
-                        now = _now()
-                        if prem_until > now:
-                            delta = prem_until - now
-                            total_days = delta.days
-                            months = total_days // 30
-                            days = total_days % 30
-                            if months > 0 and days > 0:
-                                left = t("settings_premium_left_months_days", lang, months=months, days=days)
-                            elif months > 0:
-                                left = t("settings_premium_left_months", lang, months=months)
-                            else:
-                                left = t("settings_premium_left_days", lang, days=days)
-                            prem_text = t("settings_premium_active", lang,
-                                          date=prem_until.strftime("%d.%m.%Y"), left=left)
-                        else:
-                            prem_text = t("settings_premium_expired", lang)
-
+            prem_text = t("settings_free_for_all", lang)
             settings_text = t('settings_title', lang, name=first_name, premium=prem_text)
             settings_btns = [[{"text": t('btn_change_language', lang),
                                 "callback_data": "settings:language", "style": "primary"}]]
-            if "❌" in prem_text:
-                settings_btns.insert(0, [{"text": t('btn_premium_buy', lang),
-                                          "callback_data": "buy_premium", "style": "success"}])
             send_message(chat_id, settings_text, reply_markup={"inline_keyboard": settings_btns},
                          reply_to_message_id=user_msg_id)
             return
