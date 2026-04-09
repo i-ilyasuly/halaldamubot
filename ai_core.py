@@ -367,7 +367,16 @@ def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None, placeh
 
     except Exception as e:
         print(f"[chat_with_ai] Жалпы қате: {e}")
-        return "Кешіріңіз, жүйеде шағын іркіліс болды. Сұрағыңызды немесе суретті қайта жібересіз бе? 🔄"
+        fallback = "Кешіріңіз, жүйеде шағын іркіліс болды. Сұрағыңызды немесе суретті қайта жібересіз бе? 🔄"
+        # Placeholder бар болса — оны өңдеп қоямыз, жеке хабарлама жібермейміз.
+        # (Болмаса handler-де if ai_reply is not None → қос хабарлама жіберілетін)
+        if placeholder_id and chat_id:
+            try:
+                edit_message(chat_id, placeholder_id, fallback)
+            except Exception:
+                pass
+            return None
+        return fallback
 
 
 # ════════════════════════════════════════════════════════════════

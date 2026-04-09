@@ -8,7 +8,7 @@ import uuid
 db = firestore.Client()
 bq_client = bigquery.Client()
 CACHE = {"companies": [], "ingredients": [], "loaded": False, "loaded_at": None}
-CACHE_TTL_SECONDS = 7200  # 2 сағат — reads азайту үшін
+CACHE_TTL_SECONDS = 900  # 15 минут — жаңа мекемелер тезірек пайда болуы үшін
 
 # ════════════════════════════════════════════════════════════════
 # USER CACHE — Firestore reads азайту үшін (5 минут TTL)
