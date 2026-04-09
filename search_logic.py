@@ -110,22 +110,6 @@ def get_nearby_companies(user_lat, user_lon, page=1, lang="kz"):
 # ════════════════════════════════════════════════════════════════
 
 def parse_e_code(query_text):
-    """
-    E-кодты НЕГІЗ САНЫ мен НҰСҚА ӘРПІНЕ бөледі.
-
-    БҰРЫН: search_e_code() бүтін кодты жолды қайтаратын ("e150c"),
-           содан кейін substring іздеу жүргізілетін.
-           Мәселе: "e150c" in clean_text("Е150(a-d)") → "e150c" in "e150ad" → FALSE
-
-    ЕНДІ: Негіз бен нұсқа бөлек алынады, e_variant_in_range() диапазонды тексереді.
-
-    Мысалдар:
-        "E150c"    → ("e150", "c")
-        "E120"     → ("e120", None)
-        "Е471"     → ("e471", None)   ← кирилица Е автоматты аударылады
-        "e 150 c"  → ("e150", "c")   ← бос орындар елемейді
-        "E150(c)"  → ("e150", "c")   ← жақша ішіндегі нұсқа
-    """
     normalized = query_text.replace('Е', 'E').replace('е', 'e')
     match = re.search(r'[eE]\s*[-_]?\s*(\d{2,4})\s*\(?([a-zA-Z])?\)?', normalized)
     if match:
@@ -136,44 +120,46 @@ def parse_e_code(query_text):
 
 
 def e_variant_in_range(variant, title_raw):
-    """
-    Берілген нұсқа (variant) базадағы E-код диапазонына немесе нұсқасына кіре ме?
-
-    Тексеру логикасы (3 жағдай):
-
-    1. ДИАПАЗОН: title_raw = "Е150(a-d)"
-       variant="c" → a ≤ c ≤ d → TRUE
-       variant="e" → e > d     → FALSE
-
-    2. БІР НҰСҚА: title_raw = "Е160b"
-       variant="b" → b == b    → TRUE
-       variant="c" → c != b    → FALSE
-
-    3. НҰСҚАСЫЗ ӨНІМ: title_raw = "Е120"
-       variant=None → TRUE  (нұсқасыз іздеу кез-келгенге сәйкес)
-       variant="c"  → FALSE (нұсқасыз өнімге нұсқамен іздеу сәйкес емес)
-
-    МАҢЫЗДЫ: variant=None болса — ӘРҚАШАН TRUE қайтарады.
-             Себебі адам "E150" деп іздесе, "E150(a-d)" нұсқасы да, "E150" де табылуы керек.
-    """
-    # Нұсқа берілмеген болса — кез-келген нұсқасы бар/жоқ өнімге сәйкес
     if not variant:
         return True
-
-    # 1. Диапазон: "(a-d)", "(i-iv)" т.б.
     range_match = re.search(r'\(([a-zA-Z])-([a-zA-Z])\)', title_raw)
     if range_match:
         start = range_match.group(1).lower()
         end = range_match.group(2).lower()
         return start <= variant.lower() <= end
-
-    # 2. Жақшасыз бір нұсқа: "Е160b" — цифрдан кейінгі соңғы әріп
     single_match = re.search(r'\d+([a-zA-Z])\s*$', title_raw.strip())
     if single_match:
         return single_match.group(1).lower() == variant.lower()
-
-    # 3. Нұсқасыз өнім ("Е120") + нұсқамен іздеу → сәйкес емес
     return False
+
+
+def _is_substring_match(query_clean, title_clean):
+    """
+    Substring сәйкестігін тексереді.
+
+    Мәселе: "emil" in "demilune" → TRUE болады, бірақ бұл жалған сәйкестік.
+    Шешім: Substring болса да, екі шарттың біреуі орындалуы керек:
+      1. Title query-мен БАСТАЛСА (brand атауы дәл сәйкес)
+      2. Query title ұзындығының 60%+ жапса (аты ұқсас)
+    Болмаса — fuzzy деп белгілейміз, ескерту шығады.
+    """
+    if query_clean not in title_clean:
+        return 'none'
+
+    # 1. Title query-мен басталса — нақты сәйкестік
+    # Мысалы: query="pakmir", title="pakmirstore" → exact ✅
+    if title_clean.startswith(query_clean):
+        return 'exact'
+
+    # 2. Query title-дің 60%+ жапса — нақты сәйкестік
+    # Мысалы: query="snickers" (8), title="snickers" (8) → 100% → exact ✅
+    # Мысалы: query="emil" (4), title="demilune" (8) → 50% < 60% → fuzzy ✅
+    coverage = len(query_clean) / len(title_clean)
+    if coverage >= 0.6:
+        return 'exact'
+
+    # Substring бар бірақ аз жапты — күдікті нәтиже
+    return 'fuzzy'
 
 
 def _is_match(query_text, title):
@@ -186,13 +172,19 @@ def _is_match(query_text, title):
     variants = get_variants(query_text)
     t_clean = clean_text(title)
 
+    # ── 1. ТІКЕЛЕЙ SUBSTRING ТЕКСЕРУ ─────────────────────────────────────
     for var in variants:
         v_clean = clean_text(var)
-        if len(v_clean) > 3 and v_clean in t_clean:
-            return 'exact'
+        if len(v_clean) > 3:
+            result = _is_substring_match(v_clean, t_clean)
+            if result != 'none':
+                return result
+
+        # Partial ratio — аударылған нұсқамен
         if fuzz.partial_ratio(var, title.lower()) > 80:
             return 'exact'
 
+    # ── 2. СӨЗ БОЙЫНША ТЕКСЕРУ ───────────────────────────────────────────
     stop_words = {'халал', 'харам', 'рұқсат', 'ма', 'ме', 'ба', 'бе', 'па', 'пе',
                   'деген', 'қандай', 'осы', 'точно', 'күдікті', 'емес',
                   'өнім', 'оним', 'onim', 'тамақ', 'азық', 'дүкен', 'дукен',
@@ -205,11 +197,14 @@ def _is_match(query_text, title):
         w_variants = get_variants(word)
         for w_var in w_variants:
             w_clean = clean_text(w_var)
-            if len(w_clean) > 3 and w_clean in t_clean:
-                return 'exact'
+            if len(w_clean) > 3:
+                result = _is_substring_match(w_clean, t_clean)
+                if result != 'none':
+                    return result
             if fuzz.partial_ratio(w_var, title.lower()) > 80:
                 return 'exact'
 
+    # ── 3. ЖАЛПЫ ҰҚСАСТЫҚ (ratio) ────────────────────────────────────────
     for var in variants:
         v_clean = clean_text(var)
         r = fuzz.ratio(v_clean, t_clean)
@@ -229,37 +224,24 @@ def _is_match(query_text, title):
 
 
 def search_data(query_text):
-    """
-    Іздеу функциясы.
-
-    Өзгерістер:
-    [1] name өрісінен де іздеу (мәтіндік атауы: "Кармин", "Лецитин")
-    [2] E-код диапазон іздеу: "E150c" → "Е150(a-d)" ішінде c бар → табылды
-    """
     load_cache()
     results = []
 
-    # ── E-КОД ІЗДЕУ — ДИАПАЗОН ҚОЛДАУЫМЕН [Өзгеріс #2] ─────────────────
+    # ── E-КОД ІЗДЕУ ───────────────────────────────────────────────────────
     e_base, e_variant = parse_e_code(query_text)
     if e_base:
         for i in CACHE["ingredients"]:
             title = i.get("title", "") or ""
             name = i.get("name", "") or ""
-
             title_norm = clean_text(title).replace('е', 'e')
             name_norm = clean_text(name).replace('е', 'e')
-
-            # Негіз код сәйкес пе?
             base_in_title = len(e_base) > 2 and e_base in title_norm
             base_in_name = len(e_base) > 2 and e_base in name_norm
-
             if base_in_title or base_in_name:
-                # Нұсқа диапазонда бар ма? (raw title керек — жақшалар сақталуы үшін)
                 if e_variant_in_range(e_variant, title):
                     item = format_item_dict(i, "Қоспа")
                     item['confidence'] = 'exact'
                     results.append(item)
-
         if results:
             return results
 
@@ -278,11 +260,10 @@ def search_data(query_text):
             if len(results) >= 20:
                 break
 
-    # ── ҚОСПАЛАР ІЗДЕУ — title ЖӘНЕ name [Өзгеріс #1] ───────────────────
+    # ── ҚОСПАЛАР ІЗДЕУ ───────────────────────────────────────────────────
     for i in CACHE["ingredients"]:
         title = i.get("title", "") or ""
         name = i.get("name", "") or ""
-
         conf_title = _is_match(query_text, title) if title else 'none'
         conf_name = _is_match(query_text, name) if name else 'none'
 
