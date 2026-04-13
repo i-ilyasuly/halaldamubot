@@ -3,7 +3,7 @@ requests==2.31.0
 google-cloud-firestore==2.11.1
 thefuzz==0.22.1
 python-Levenshtein==0.25.0
-google-generativeai
+google-generativeai==0.8.5
 google-cloud-storage
 google-cloud-bigquery
 google-cloud-vision
