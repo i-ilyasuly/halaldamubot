@@ -384,7 +384,7 @@ def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None, placeh
 # ════════════════════════════════════════════════════════════════
 
 def process_image_with_ai(image_bytes):
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-3.1-pro-preview')
     image_parts = [{"mime_type": "image/jpeg", "data": image_bytes}]
     prompt = """Сен — қаптама суретінен өнім немесе мекеме атауын дәл анықтайтын мамансың.
 Сенің жалғыз міндетің: суреттегі өнімнің немесе мекеменің БАЗАДАН ІЗДЕУГЕ
