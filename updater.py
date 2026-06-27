@@ -21,7 +21,7 @@ def update_database():
 
     # 1. МЕКЕМЕЛЕРДІ ЖАҢАРТУ
     try:
-        comp_url = "https://halaldamu.kz/wp-json/map/v1/active-companies?lang=kz&show_all=1"
+        comp_url = "https://halaldamu.kz/wp-json/halal-bot/v1/companies"
         print(f"[updater] Мекемелер API сұрауы: {comp_url}")
         comp_resp = requests.get(comp_url, timeout=150)
         print(f"[updater] HTTP статус: {comp_resp.status_code}, ұзындық: {len(comp_resp.content)} байт")
