@@ -7,7 +7,7 @@ from payments import process_pre_checkout
 
 from handlers_callback import handle_callback
 from handlers_inline import handle_inline
-from handlers_message import handle_message
+from handlers_message import handle_message 
 
 # Telegram webhook retry-ды болдырмау үшін update_id кэші.
 # Instance ішінде тұрақты: бір instance 10-15 минут тіршілік етеді,
