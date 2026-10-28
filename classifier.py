@@ -1,16 +1,17 @@
 import json
 import re
-import google.generativeai as genai
-from config import GEMINI_API_KEY
+import vertexai
+from vertexai.generative_models import GenerativeModel
+from config import PROJECT_ID, REGION
 
-genai.configure(api_key=GEMINI_API_KEY)
+vertexai.init(project=PROJECT_ID, location="global")
 
 def classify_query(text):
     """
     Пайдаланушы мәтінін классификациялайды.
     Notion AI Промттар (v1.0) — "Сұрауды жіктеу" промты.
     """
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = GenerativeModel('gemini-2.5-flash')
 
     prompt = f"""Сен — халал өнімдер базасының іздеу маршрутизаторысың.
 Пайдаланушының хабарламасын оқып, БІРДЕН JSON қайтар.
@@ -87,8 +88,7 @@ query өрісінен НЕ алып тастау керек:
 
     try:
         response = model.generate_content(
-            prompt,
-            request_options={"timeout": 10}
+            prompt
         )
         raw = response.text.strip()
         raw = re.sub(r'```json\s*', '', raw)
