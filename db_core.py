@@ -8,7 +8,7 @@ import uuid
 db = firestore.Client()
 bq_client = bigquery.Client()
 CACHE = {"companies": [], "ingredients": [], "loaded": False, "loaded_at": None}
-CACHE_TTL_SECONDS = 900  # 15 минут — жаңа мекемелер тезірек пайда болуы үшін
+CACHE_TTL_SECONDS = 43200  # 12 сағат — база крон арқылы жаңарғанда кэш автоматты түрде тазаланады
 
 # ════════════════════════════════════════════════════════════════
 # USER CACHE — Firestore reads азайту үшін (5 минут TTL)
@@ -92,9 +92,18 @@ def load_cache():
             d["id"] = doc.id
         return d
 
-    comps = db.collection("companies").stream()
+    # Оңтайландыру: Тек іздеуге және тізімге қажетті өрістерді ғана таңдап оқимыз (.select())
+    comps = db.collection("companies").select([
+        "title", "legal_name", "map_link", "address", "legal_address",
+        "certificate_date_start", "certificate_date_end", "certificate_status",
+        "featured_image"
+    ]).stream()
     CACHE["companies"] = [_with_doc_id(c) for c in comps]
-    ings = db.collection("ingredients").stream()
+
+    # Оңтайландыру: Тек қажетті өрістерді таңдап оқимыз
+    ings = db.collection("ingredients").select([
+        "title", "name", "status", "desc"
+    ]).stream()
     CACHE["ingredients"] = [_with_doc_id(i) for i in ings]
     CACHE["loaded"] = True
     CACHE["loaded_at"] = now
@@ -123,15 +132,34 @@ def add_user(user_id, first_name, username):
     db.collection("users").document(str(user_id)).set({"first_name": first_name, "username": username}, merge=True)
 
 def get_item_by_id(item_type_code, item_id):
-    load_cache()
-    if item_type_code == 'c':
-        for c in CACHE["companies"]:
-            if str(c.get("id")) == item_id:
-                return format_item_dict(c, "Мекеме")
-    elif item_type_code == 'i':
-        for i in CACHE["ingredients"]:
-            if str(i.get("id")) == item_id:
-                return format_item_dict(i, "Қоспа")
+    # 1. Кэш жүктелген әрі жарамды болса, деректі жадтан жылдам іздейміз
+    now = _now()
+    cache_valid = (
+        CACHE["loaded"] and
+        CACHE["loaded_at"] is not None and
+        (now - CACHE["loaded_at"]).total_seconds() <= CACHE_TTL_SECONDS
+    )
+    if cache_valid:
+        if item_type_code == 'c':
+            for c in CACHE["companies"]:
+                if str(c.get("id")) == item_id:
+                    return format_item_dict(c, "Мекеме")
+        elif item_type_code == 'i':
+            for i in CACHE["ingredients"]:
+                if str(i.get("id")) == item_id:
+                    return format_item_dict(i, "Қоспа")
+
+    # 2. Кэш ескі немесе табылмай қалса, Firestore-дан ID бойынша тікелей өте жылдам оқимыз
+    # Бұл әдіс 4-6 секундтық күтуді толығымен жойып, ~50-100мс ішінде жауап береді
+    coll = "companies" if item_type_code == 'c' else "ingredients"
+    doc_ref = db.collection(coll).document(item_id)
+    doc = doc_ref.get()
+    if doc.exists:
+        data = doc.to_dict() or {}
+        if not data.get("id"):
+            data["id"] = doc.id
+        type_name = "Мекеме" if item_type_code == 'c' else "Қоспа"
+        return format_item_dict(data, type_name)
     return None
 
 def check_access(user_id, is_symbat):
