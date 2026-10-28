@@ -5,7 +5,7 @@ from translations import t
 from search_logic import search_data
 from formatters import format_detail_message
 
-SYMBAT_ID = 1042456426
+from config import SYMBAT_ID
 
 def handle_inline(inline_query):
     inline_query_id = inline_query["id"]
@@ -19,7 +19,8 @@ def handle_inline(inline_query):
     # --- ЖАҢА: СЫЙЛЫҚ ҚОРАБЫН ИНЛАЙН ЖІБЕРУ ---
     if query_text.startswith("giftbox_"):
         gift_code = query_text.replace("giftbox_", "")
-        bot_username = "halaldamu_bot"
+        from config import get_bot_username
+        bot_username = get_bot_username()
 
         # Firestore-дан тариф атауын аламыз
         gift_label_kz = "30 күн"
@@ -69,13 +70,14 @@ def handle_inline(inline_query):
     if len(query_text) >= 3:
         has_access, tier = check_access(user_id, user_id == SYMBAT_ID)
         if not has_access:
-            answer_inline_query(inline_query_id,[], button={"text": t("btn_inline_limit", lang), "start_parameter": "buy_premium"})
+            answer_inline_query(inline_query_id, [], button={"text": t("btn_inline_limit", lang), "start_parameter": "buy_premium"})
             return
         
         found_items = search_data(query_text)
-        tg_results =[]
+        tg_results = []
+        is_group_chat = inline_query.get("chat_type") in ["group", "supergroup"]
+
         for item in found_items:
-            text_msg, markup = format_detail_message(item, lang=lang)
             status = item.get("status", "")
             if "Белсенді" in status or "Рұқсат" in status:
                 thumb_url, icon = "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/128/emoji_u2705.png", "✅"
@@ -88,15 +90,26 @@ def handle_inline(inline_query):
             title_text = f"{icon} {clean_title}"
             desc_text = f"🏢 {item.get('desc', 'Мекеме')} • 📍 {item.get('address', '')}" if item['type'] == "Мекеме" else f"🏷 Қоспа • 📊 {status}"
 
-            tg_results.append({
-                "type": "article", "id": str(uuid.uuid4()), "title": title_text, "description": desc_text,
-                "thumbnail_url": thumb_url, "thumbnail_width": 128, "thumbnail_height": 128,
-                "input_message_content": {"message_text": text_msg, "parse_mode": "HTML"},
-                "reply_markup": markup
-            })
+            if is_group_chat:
+                # Топтық чатта тек іздеуді бастайтын қысқа хабарлама жібереміз
+                trigger_text = f"🔍 {clean_title}"
+                tg_results.append({
+                    "type": "article", "id": str(uuid.uuid4()), "title": title_text, "description": desc_text,
+                    "thumbnail_url": thumb_url, "thumbnail_width": 128, "thumbnail_height": 128,
+                    "input_message_content": {"message_text": trigger_text, "parse_mode": "HTML"}
+                })
+            else:
+                # Жеке чатта толық карточканы бірден жібереміз
+                text_msg, markup = format_detail_message(item, lang=lang)
+                tg_results.append({
+                    "type": "article", "id": str(uuid.uuid4()), "title": title_text, "description": desc_text,
+                    "thumbnail_url": thumb_url, "thumbnail_width": 128, "thumbnail_height": 128,
+                    "input_message_content": {"message_text": text_msg, "parse_mode": "HTML"},
+                    "reply_markup": markup
+                })
         answer_inline_query(inline_query_id, tg_results, button=prompt_button)
         increment_usage(user_id)
         log_to_bigquery(user_id, "inline_search", query_text,
                         f"Табылды ({len(tg_results)})", result_count=len(tg_results))
     else:
-        answer_inline_query(inline_query_id,[], button=prompt_button)
+        answer_inline_query(inline_query_id, [], button=prompt_button)
