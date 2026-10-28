@@ -1,4 +1,21 @@
 import requests
+from functools import partial
+from contextvars import ContextVar
+
+# Тұрақты TCP/TLS байланыс үшін Keep-Alive қолдайтын сессия (Connection Pool)
+session = requests.Session()
+
+# HTTP сұраныстардың қатып қалуын болдырмау үшін дефолттық тайм-аут орнату (5 секунд)
+# 5 секундтан асса, сұраныс автоматты түрде үзіледі және ағын босатылады.
+session.post = partial(session.post, timeout=5)
+session.get = partial(session.get, timeout=5)
+
+# Барлық файлдарда requests.post және requests.get қолдану үшін модуль деңгейінде алмастыру
+requests.post = session.post
+requests.get = session.get
+
+message_thread_id_var = ContextVar("message_thread_id", default=None)
+
 from config import BOT_TOKEN
 
 TG_MAX_LENGTH = 4096  # Telegram хабарлама лимиті
@@ -23,62 +40,68 @@ def _truncate_text(text, limit=TG_MAX_LENGTH):
     return truncated + suffix
 
 
-def send_message(chat_id, text, reply_markup=None, message_effect_id=None, reply_to_message_id=None):
+def send_message(chat_id, text, reply_markup=None, message_effect_id=None, reply_to_message_id=None, message_thread_id=None):
+    if message_thread_id is None:
+        message_thread_id = message_thread_id_var.get()
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
-               "link_preview_options": {"is_disabled": True},
-               "disable_web_page_preview": True}
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "link_preview_options": {"is_disabled": True},
+        "disable_web_page_preview": True
+    }
 
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
     if reply_markup:
         payload["reply_markup"] = reply_markup
-
     if message_effect_id:
         payload["message_effect_id"] = str(message_effect_id)
-
     if reply_to_message_id:
         payload["reply_parameters"] = {"message_id": reply_to_message_id}
 
-    resp = requests.post(url, json=payload).json()
-
-    if resp.get("ok"):
-        return resp["result"]["message_id"]
-
-    # Мәтін тым ұзын болса — қысқартып қайта жіберу
-    desc = resp.get("description", "").lower()
-    if "too long" in desc:
-        print(f"[send_message] Мәтін тым ұзын ({len(text)} символ), қысқартылады")
-        payload["text"] = _truncate_text(text)
+    for attempt in range(4):
         resp = requests.post(url, json=payload).json()
         if resp.get("ok"):
             return resp["result"]["message_id"]
 
-    # Reply хабарлама табылмаса — reply-сіз қайта жіберу
-    if reply_to_message_id and "message" in desc and "not found" in desc:
-        print(f"[send_message] Reply message табылмады, reply-сіз жіберіледі")
-        payload.pop("reply_parameters", None)
-        resp = requests.post(url, json=payload).json()
-        if resp.get("ok"):
-            return resp["result"]["message_id"]
+        desc = resp.get("description", "").lower()
+        print(f"[send_message] Сынақ {attempt+1} сәтсіз: {desc}")
 
-    # Эффект қабылдамаса — эффектсіз қайта жіберу
-    if message_effect_id:
-        print(f"Telegram Эффект қабылдамады: {resp}")
-        payload.pop("message_effect_id", None)
-        payload.pop("reply_parameters", None)
-        resp = requests.post(url, json=payload).json()
-        if resp.get("ok"):
-            return resp["result"]["message_id"]
+        # 1. Мәтін тым ұзын болса — қысқартып қайталап көру
+        if "too long" in desc:
+            print(f"[send_message] Мәтінді қысқарту...")
+            payload["text"] = _truncate_text(payload["text"])
+            continue
 
-    print(f"[send_message] Қате: {resp}")
+        # 2. Хабарлама эффектісін қабылдамаса — эффектсіз қайталап көру
+        if "message effect" in desc or "can't use message effects" in desc:
+            print(f"[send_message] Эффектті өшіру...")
+            payload.pop("message_effect_id", None)
+            continue
+
+        # 3. Reply хабарлама табылмаса — reply-сіз қайталап көру
+        if "reply" in desc or "not found" in desc:
+            print(f"[send_message] Reply параметрін өшіру...")
+            payload.pop("reply_parameters", None)
+            continue
+
+        # Басқа белгісіз қателіктер кезінде циклді тоқтату
+        break
+
+    print(f"[send_message] Жіберу сәтсіз аяқталды: {payload.get('text', '')[:100]}...")
     return None
 
 
-def send_message_draft(chat_id, text, draft_id):
+def send_message_draft(chat_id, text, draft_id, message_thread_id=None):
     """
     Bot API 9.5 — streaming AI жауабы үшін.
     Бір draft_id арқылы бірнеше рет шақырылады,
     пайдаланушыда мәтін бірте-бірте пайда болады.
     """
+    if message_thread_id is None:
+        message_thread_id = message_thread_id_var.get()
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessageDraft"
     payload = {
         "chat_id": chat_id,
@@ -86,6 +109,8 @@ def send_message_draft(chat_id, text, draft_id):
         "parse_mode": "HTML",
         "draft_id": draft_id
     }
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
     resp = requests.post(url, json=payload).json()
     if not resp.get("ok"):
         # Қате болса үнсіз өтеміз — streaming үзілмесін
@@ -95,18 +120,21 @@ def send_message_draft(chat_id, text, draft_id):
 
 
 def send_photo_message(chat_id, photo_url, caption, reply_markup=None,
-                       message_effect_id=None, reply_to_message_id=None):
+                       message_effect_id=None, reply_to_message_id=None, message_thread_id=None):
     """
     Сурет + мәтін хабары жіберу (мекеме суреті үшін).
     Сурет жүктелмесе немесе қате болса — тікелей send_message шақырылады.
     Caption лимиті 1024 символ — асса send_message-ге ауысады.
     """
+    if message_thread_id is None:
+        message_thread_id = message_thread_id_var.get()
     # sendPhoto caption лимиті: 1024 символ
     if len(caption) > 1024:
         print(f"[send_photo_message] Caption тым ұзын ({len(caption)}), send_message-ге ауысады")
         return send_message(chat_id, caption, reply_markup=reply_markup,
                             message_effect_id=message_effect_id,
-                            reply_to_message_id=reply_to_message_id)
+                            reply_to_message_id=reply_to_message_id,
+                            message_thread_id=message_thread_id)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     payload = {
         "chat_id": chat_id,
@@ -114,6 +142,8 @@ def send_photo_message(chat_id, photo_url, caption, reply_markup=None,
         "caption": caption,
         "parse_mode": "HTML"
     }
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
     if reply_markup:
         payload["reply_markup"] = reply_markup
     if message_effect_id:
@@ -121,44 +151,60 @@ def send_photo_message(chat_id, photo_url, caption, reply_markup=None,
     if reply_to_message_id:
         payload["reply_parameters"] = {"message_id": reply_to_message_id}
 
-    resp = requests.post(url, json=payload).json()
-
-    if resp.get("ok"):
-        return resp["result"]["message_id"]
-
-    # Reply хабарлама табылмаса — reply-сіз қайта жіберу
-    if reply_to_message_id and "not found" in resp.get("description", "").lower():
-        print(f"[send_photo_message] Reply message табылмады, reply-сіз жіберіледі")
-        payload.pop("reply_parameters", None)
+    for attempt in range(4):
         resp = requests.post(url, json=payload).json()
         if resp.get("ok"):
             return resp["result"]["message_id"]
 
-    # Сурет жүктелмесе — fallback: тікелей мәтін хабары
-    print(f"[send_photo_message] Сурет жүктелмеді, мәтін жіберіледі: {resp.get('description', '')}")
+        desc = resp.get("description", "").lower()
+        print(f"[send_photo_message] Сынақ {attempt+1} сәтсіз: {desc}")
+
+        # 1. Хабарлама эффектісін қабылдамаса — эффектсіз қайталап көру
+        if "message effect" in desc or "can't use message effects" in desc:
+            print(f"[send_photo_message] Эффектті өшіру...")
+            payload.pop("message_effect_id", None)
+            continue
+
+        # 2. Reply хабарлама табылмаса — reply-сіз қайталап көру
+        if "reply" in desc or "not found" in desc:
+            print(f"[send_photo_message] Reply параметрін өшіру...")
+            payload.pop("reply_parameters", None)
+            continue
+
+        # Басқа белгісіз қателіктер кезінде циклді тоқтату
+        break
+
+    # Егер сурет жіберу мүлдем сәтсіз болса — мәтін хабарламасына ауысамыз (fallback)
+    print(f"[send_photo_message] Сурет жіберу сәтсіз болды, мәтін жіберіледі")
     return send_message(chat_id, caption, reply_markup=reply_markup,
                         message_effect_id=message_effect_id,
-                        reply_to_message_id=reply_to_message_id)
+                        reply_to_message_id=reply_to_message_id,
+                        message_thread_id=message_thread_id)
 
-def send_photo_bytes(chat_id, photo_bytes, caption):
+def send_photo_bytes(chat_id, photo_bytes, caption, message_thread_id=None):
     """
     Сурет bytes арқылы тікелей Telegram-ға жіберу.
     GCS signed URL керек емес — multipart upload.
     """
+    if message_thread_id is None:
+        message_thread_id = message_thread_id_var.get()
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
+    if message_thread_id:
+        data["message_thread_id"] = message_thread_id
     try:
         resp = requests.post(
             url,
-            data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
+            data=data,
             files={"photo": ("photo.jpg", photo_bytes, "image/jpeg")}
         ).json()
         if resp.get("ok"):
             return resp["result"]["message_id"]
         print(f"[send_photo_bytes] Қате: {resp.get('description', '')}")
-        return send_message(chat_id, caption)
+        return send_message(chat_id, caption, message_thread_id=message_thread_id)
     except Exception as e:
         print(f"[send_photo_bytes] Қате: {e}")
-        return send_message(chat_id, caption)
+        return send_message(chat_id, caption, message_thread_id=message_thread_id)
 
 
 def edit_message(chat_id=None, message_id=None, text=None, reply_markup=None, inline_message_id=None):
@@ -219,7 +265,9 @@ def download_photo(file_id):
     download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
     return requests.get(download_url).content
 
-def send_invoice(chat_id):
+def send_invoice(chat_id, message_thread_id=None):
+    if message_thread_id is None:
+        message_thread_id = message_thread_id_var.get()
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
     payload = {
         "chat_id": chat_id,
@@ -230,6 +278,8 @@ def send_invoice(chat_id):
         "currency": "XTR",    
         "prices": [{"label": "Premium", "amount": 100}]
     }
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
     resp = requests.post(url, json=payload).json()
     if not resp.get("ok"):
         print(f"[send_invoice] Қате: {resp}")
@@ -243,9 +293,13 @@ def answer_pre_checkout_query(pre_checkout_query_id, ok=True, error_message=None
     if not resp.get("ok"):
         print(f"[answer_pre_checkout_query] Қате: {resp}")
 
-def send_chat_action(chat_id, action="typing"):
+def send_chat_action(chat_id, action="typing", message_thread_id=None):
+    if message_thread_id is None:
+        message_thread_id = message_thread_id_var.get()
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendChatAction"
     payload = {"chat_id": chat_id, "action": action}
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
     requests.post(url, json=payload)
 
 def delete_message(chat_id, message_id):
@@ -265,7 +319,9 @@ def set_message_reaction(chat_id, message_id, emoji, is_big=True):
     }
     requests.post(url, json=payload)
 
-def send_gift_invoice(chat_id, gift_type, recipient_username=None, buyer_name=None):
+def send_gift_invoice(chat_id, gift_type, recipient_username=None, buyer_name=None, message_thread_id=None):
+    if message_thread_id is None:
+        message_thread_id = message_thread_id_var.get()
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
 
     # Payload 128 символдан аспауы керек — buyer_name-ді қысқартамыз
@@ -291,12 +347,16 @@ def send_gift_invoice(chat_id, gift_type, recipient_username=None, buyer_name=No
         "currency": "XTR",    
         "prices": [{"label": "Premium Сыйлық", "amount": 100}]
     }
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
     resp = requests.post(url, json=payload).json()
     if not resp.get("ok"):
         print(f"[send_gift_invoice] Қате: {resp}")
 
-def send_tariff_invoice(chat_id, tariff_id, buyer_name=None):
+def send_tariff_invoice(chat_id, tariff_id, buyer_name=None, message_thread_id=None):
     """Белгілі тарифке шот жіберу — өзіне алу үшін"""
+    if message_thread_id is None:
+        message_thread_id = message_thread_id_var.get()
     from tariffs import get_tariff_by_id
     t = get_tariff_by_id(tariff_id)
     if not t:
@@ -316,13 +376,17 @@ def send_tariff_invoice(chat_id, tariff_id, buyer_name=None):
         "currency": "XTR",
         "prices": [{"label": f"Premium {t['label']}", "amount": t['stars']}]
     }
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
     resp = requests.post(url, json=payload).json()
     if not resp.get("ok"):
         print(f"[send_tariff_invoice] Қате: {resp}")
 
 
-def send_gift_tariff_invoice(chat_id, tariff_id, gift_type, recipient_username=None, buyer_name=None):
+def send_gift_tariff_invoice(chat_id, tariff_id, gift_type, recipient_username=None, buyer_name=None, message_thread_id=None):
     """Белгілі тарифке сыйлық шоты"""
+    if message_thread_id is None:
+        message_thread_id = message_thread_id_var.get()
     from tariffs import get_tariff_by_id
     t = get_tariff_by_id(tariff_id)
     if not t:
@@ -351,6 +415,17 @@ def send_gift_tariff_invoice(chat_id, tariff_id, gift_type, recipient_username=N
         "currency": "XTR",
         "prices": [{"label": f"Premium Сыйлық {t['label']}", "amount": t['stars']}]
     }
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
     resp = requests.post(url, json=payload).json()
     if not resp.get("ok"):
         print(f"[send_gift_tariff_invoice] Қате: {resp}")
+
+
+def leave_chat(chat_id):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/leaveChat"
+    payload = {"chat_id": chat_id}
+    resp = requests.post(url, json=payload).json()
+    if not resp.get("ok"):
+        print(f"[leave_chat] Қате: {resp}")
+    return resp.get("ok", False)
