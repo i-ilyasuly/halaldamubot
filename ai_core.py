@@ -1,16 +1,17 @@
-import google.generativeai as genai
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part
 from google.cloud import storage
 import json
 import uuid
 import re
 import time
-from config import GEMINI_API_KEY, BUCKET_NAME, SUSPICIOUS_FOLDER
+from config import PROJECT_ID, REGION, BUCKET_NAME, SUSPICIOUS_FOLDER
 from db_core import get_chat_history
 from search_logic import search_data
 from formatters import format_detail_message
 from bot_sender import edit_message
 
-genai.configure(api_key=GEMINI_API_KEY)
+vertexai.init(project=PROJECT_ID, location="global")
 storage_client = storage.Client()
 
 def clean_json_string(raw_text):
@@ -43,7 +44,7 @@ def extract_search_term(text):
     Пайдаланушының сұрауынан нақты өнім/мекеме атауын шығарады.
     Notion AI Промттар (v1.0) — Нормализация промты.
     """
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = GenerativeModel('gemini-2.5-flash')
     prompt = f"""Сен — халал өнімдер базасының іздеу нормализаторысың.
 Пайдаланушының сұрауынан ТІКЕЛЕЙ ІЗДЕУГЕ ЖАРАЙТЫН атауды шығарасың.
 
@@ -89,8 +90,7 @@ def extract_search_term(text):
 
     try:
         response = model.generate_content(
-            prompt,
-            request_options={"timeout": 10}
+            prompt
         )
         result = response.text.strip().strip('"\'').strip()
         if not result or result == "NONE" or len(result) > 60:
@@ -110,7 +110,7 @@ def get_not_found_reply(original_query, normalized_query, lang='kz'):
     Базадан мүлдем табылмаған кезде қатаң нұсқаулықпен жауап жазады.
     Notion AI Промттар (v1.0) — "Табылмады жауабы" промты.
     """
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = GenerativeModel('gemini-2.5-flash')
 
     if lang == 'ru':
         prompt = f"""Ты — помощник бота ДУМК Halal Damu.
@@ -201,8 +201,7 @@ def get_not_found_reply(original_query, normalized_query, lang='kz'):
 
     try:
         response = model.generate_content(
-            prompt,
-            request_options={"timeout": 10}
+            prompt
         )
         return format_ai_text(response.text)
     except Exception as e:
@@ -217,7 +216,7 @@ def get_not_found_reply(original_query, normalized_query, lang='kz'):
 # ════════════════════════════════════════════════════════════════
 
 def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None, placeholder_id=None):
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = GenerativeModel('gemini-2.5-flash')
 
     if is_symbat:
         system_instruction = (
@@ -384,8 +383,11 @@ def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None, placeh
 # ════════════════════════════════════════════════════════════════
 
 def process_image_with_ai(image_bytes):
-    model = genai.GenerativeModel('gemini-3.1-pro-preview')
-    image_parts = [{"mime_type": "image/jpeg", "data": image_bytes}]
+    model = GenerativeModel('gemini-3.6-flash')
+    image_part = Part.from_data(
+        data=image_bytes,
+        mime_type="image/jpeg"
+    )
     prompt = """Сен — қаптама суретінен өнім немесе мекеме атауын дәл анықтайтын мамансың.
 Сенің жалғыз міндетің: суреттегі өнімнің немесе мекеменің БАЗАДАН ІЗДЕУГЕ
 ЖАРАЙТЫН атауын шығарып, JSON форматында қайтару.
@@ -460,8 +462,7 @@ KFC вывескасы ("KFC" деп жазылған)            → {"product_
 
     try:
         response = model.generate_content(
-            [prompt, image_parts[0]],
-            request_options={"timeout": 90}
+            [prompt, image_part]
         )
         result_text = clean_json_string(response.text)
         return json.loads(result_text)
@@ -472,7 +473,9 @@ KFC вывескасы ("KFC" деп жазылған)            → {"product_
 
 def handle_photo(image_bytes, chat_id, username, lang="kz"):
     import concurrent.futures
+    import time
     from translations import t as _t
+    t_start = time.perf_counter()
 
     # vision_collector импорты — қате болса бот тоқтамайды
     try:
@@ -483,7 +486,10 @@ def handle_photo(image_bytes, chat_id, username, lang="kz"):
         _vision_ok = False
 
     # ── ПРОЦЕСС A — бренд атауын шығару ─────────────────────────────────
+    t_ai = time.perf_counter()
     ai_result = process_image_with_ai(image_bytes)
+    dt_ai = time.perf_counter() - t_ai
+    print(f"[handle_photo] process_image_with_ai (Vertex AI Gemini) орындалу уақыты: {dt_ai:.3f}с")
 
     # ── ПРОЦЕСС B — фонда жұмыс жасайды, жауапты күтпейді ───────────────
     if _vision_ok:
@@ -502,20 +508,28 @@ def handle_photo(image_bytes, chat_id, username, lang="kz"):
 
     if not product_names:
         from translations import t
+        print(f"[handle_photo] Өнім атауы табылмады. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
         return t("photo_no_name", lang), None, ""
 
     if "ҚАТЕ_МӘТІНІ:" in product_names[0]:
+        print(f"[handle_photo] Суретті тану кезінде қате орын алды. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
         return f"❌ <b>Қате:</b> {product_names[0]}", None, ""
 
     # ── Мәңгілік бан базасын тексеру (іздемес бұрын) ─────────────────────
+    t_viol = time.perf_counter()
     try:
         violator_reply = check_violators_db(product_names[0], lang) if _vision_ok else None
     except Exception as e:
         print(f"[handle_photo] check_violators_db қате: {e}")
         violator_reply = None
+    dt_viol = time.perf_counter() - t_viol
+    print(f"[handle_photo] check_violators_db орындалу уақыты: {dt_viol:.3f}с")
+    
     if violator_reply:
+        print(f"[handle_photo] Өнім қара тізімде. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
         return violator_reply, None, ""
 
+    t_db = time.perf_counter()
     all_found_items = []
     seen_ids = set()
 
@@ -531,30 +545,33 @@ def handle_photo(image_bytes, chat_id, username, lang="kz"):
             break
 
     names_str = ", ".join(product_names)
+    dt_db = time.perf_counter() - t_db
+    print(f"[handle_photo] Мәліметтер базасынан іздеу уақыты: {dt_db:.3f}с")
 
     if all_found_items:
+        print(f"[handle_photo] Нәтиже табылды! Элемент саны: {len(all_found_items)}. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
         if len(all_found_items) == 1:
             text, markup = format_detail_message(all_found_items[0], confidence=all_found_items[0].get('confidence', 'exact'), query_text=product_names[0], lang=lang)
             from translations import t
             final_text = t("photo_recognized", lang, name=product_names[0]) + text
             return final_text, markup, all_found_items[0].get("image_url", "")
         else:
+            from db_core import save_search_session
+            from handlers_message import _build_search_results_page
             from translations import t
-            reply_text = t("photo_recognized_choose", lang, name=product_names[0])
-            keyboard = []
-            for idx, item in enumerate(all_found_items[:5]):
-                if item['type'] == 'Мекеме':
-                    desc_text = f"📍 {item.get('address', 'Мекенжай жоқ')}"
-                else:
-                    desc_text = f"🏷 {item.get('desc', '')}"
-                reply_text += f"<b>{idx+1}. «{item['title']}»</b>\n{desc_text}\n\n"
-                t_code = "c" if item['type'] == "Мекеме" else "i"
-                keyboard.append([{"text": f"{idx+1}. «{item['title']}»", "callback_data": f"itm:{t_code}:{item['id']}"}])
+
+            session_id = save_search_session(chat_id, all_found_items)
+            header_text = t("photo_recognized_choose", lang, name=product_names[0])
+            reply_text, keyboard = _build_search_results_page(all_found_items, 1, 5,
+                                                              session_id=session_id, lang=lang,
+                                                              header_text=header_text)
             return reply_text, {"inline_keyboard": keyboard}, ""
 
     else:
         original_name = product_names[0] if product_names else ""
+        t_term = time.perf_counter()
         normalized_name = extract_search_term(original_name) if original_name else None
+        print(f"[handle_photo] extract_search_term (Gemini) орындалу уақыты: {time.perf_counter() - t_term:.3f}с")
         second_found = []
 
         if normalized_name:
@@ -567,27 +584,27 @@ def handle_photo(image_bytes, chat_id, username, lang="kz"):
                     seen_ids.add(item['id'])
 
         if second_found:
+            print(f"[handle_photo] Екінші іздеу нәтижесі табылды! Элемент саны: {len(second_found)}. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
             if len(second_found) == 1:
                 text, markup = format_detail_message(second_found[0], confidence=second_found[0].get('confidence', 'exact'), query_text=original_name, lang=lang)
                 from translations import t
                 final_text = t("photo_recognized", lang, name=original_name) + text
                 return final_text, markup, second_found[0].get("image_url", "")
             else:
+                from db_core import save_search_session
+                from handlers_message import _build_search_results_page
                 from translations import t
-                reply_text = t("photo_recognized_choose", lang, name=original_name)
-                keyboard = []
-                for idx, item in enumerate(second_found[:5]):
-                    if item['type'] == 'Мекеме':
-                        desc_text = f"📍 {item.get('address', 'Мекенжай жоқ')}"
-                    else:
-                        desc_text = f"🏷 {item.get('desc', '')}"
-                    reply_text += f"<b>{idx+1}. «{item['title']}»</b>\n{desc_text}\n\n"
-                    t_code = "c" if item['type'] == "Мекеме" else "i"
-                    keyboard.append([{"text": f"{idx+1}. «{item['title']}»", "callback_data": f"itm:{t_code}:{item['id']}"}])
+
+                session_id = save_search_session(chat_id, second_found)
+                header_text = t("photo_recognized_choose", lang, name=original_name)
+                reply_text, keyboard = _build_search_results_page(second_found, 1, 5,
+                                                                  session_id=session_id, lang=lang,
+                                                                  header_text=header_text)
                 return reply_text, {"inline_keyboard": keyboard}, ""
 
         else:
             # ── ПРОЦЕСС C (лого детектор) — кейін қосылады ───────────────
             # Vision API іске қосылғанда: save_to_suspicious + notify_admin
             not_found_reply = get_not_found_reply(original_name, normalized_name, lang=lang)
+            print(f"[handle_photo] Өнім мүлдем табылмады. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
             return not_found_reply, None, ""
