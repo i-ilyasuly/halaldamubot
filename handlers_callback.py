@@ -7,7 +7,7 @@ from payments import handle_buy_premium_callback
 from gift_state import (set_awaiting_username, clear_state, get_pending_username,
                         set_pending_anon, get_pending_anon)
 
-SYMBAT_ID = 1042456426
+from config import SYMBAT_ID
 
 EFFECT_HALAL = "5046509860389126442"
 EFFECT_EXPIRED = "5104858069142078462"
@@ -218,12 +218,22 @@ def handle_callback(cb):
         log_to_bigquery(user_id, "set_gender", gender_kz, "Профиль жаңартылды", gender=gender_kz)
 
     elif data.startswith("srch:"):
-        answer_callback(cb["id"])
+        import time
+        import threading
+        t0 = time.perf_counter()
+        # answer_callback-ты фонда асинхронды жібереміз, бұғаттамайды
+        threading.Thread(target=answer_callback, args=(cb["id"],)).start()
         try:
             import math
             _, page_str, session_id = data.split(":", 2)
             page = int(page_str)
+            
+            t_sess = time.perf_counter()
             items_meta = get_search_session(session_id)
+            dt_sess = time.perf_counter() - t_sess
+            print(f"[srch callback] get_search_session орындалу уақыты: {dt_sess:.3f}с (элемент саны={len(items_meta) if items_meta else 0})")
+
+            t_items = time.perf_counter()
             all_items = []
             for m in items_meta:
                 t_code = "c" if m["t"] == "Мекеме" else "i"
@@ -231,6 +241,8 @@ def handle_callback(cb):
                 if item:
                     item['confidence'] = m.get('c', 'exact')
                     all_items.append(item)
+            dt_items = time.perf_counter() - t_items
+            print(f"[srch callback] Элементтерді базадан/кэштен жүктеу уақыты: {dt_items:.3f}с")
 
             per_page = 5
             total = len(all_items)
@@ -283,12 +295,18 @@ def handle_callback(cb):
                             "style": "primary"})
             if nav:
                 keyboard.append(nav)
+            
+            t_edit = time.perf_counter()
             edit_message(chat_id, message_id, reply_text, {"inline_keyboard": keyboard})
+            dt_edit = time.perf_counter() - t_edit
+            print(f"[srch callback] edit_message орындалу уақыты: {dt_edit:.3f}с")
+            print(f"[srch callback] ЖАЛПЫ уақыт: {time.perf_counter() - t0:.3f}с")
         except Exception as e:
             print(f"[srch callback] Қате: {e}")
 
     elif data.startswith("loc:"):
-        answer_callback(cb["id"])
+        import threading
+        threading.Thread(target=answer_callback, args=(cb["id"],)).start()
         try:
             _, page_str, lat_str, lon_str = data.split(":", 3)
             text, markup = get_nearby_companies(float(lat_str), float(lon_str),
@@ -299,29 +317,36 @@ def handle_callback(cb):
 
     # ── itm: callback — нәтиже батырмасы басылғанда ─────────────────────────
     elif data.startswith("itm:"):
+        import time
+        import threading
+        t0 = time.perf_counter()
         parts = data.split(":")
         t_code, item_id = parts[1], parts[2]
-        print(f"[itm callback] t_code={t_code}, item_id={item_id}, chat_id={chat_id}")
+        print(f"[itm callback] БАСТАЛДЫ: t_code={t_code}, item_id={item_id}, chat_id={chat_id}")
+
+        # UX Оңтайландыру: Telegram-дағы жүктеу белгісін (loading spinner) лезде фонда өшіру
+        threading.Thread(target=answer_callback, args=(cb["id"],)).start()
+        print(f"[itm callback] answer_callback фонда асинхронды іске қосылды")
 
         try:
+            t_get = time.perf_counter()
             item = get_item_by_id(t_code, item_id)
-            print(f"[itm callback] item={'табылды' if item else 'ТАБЫЛМАДЫ'}")
+            dt_get = time.perf_counter() - t_get
+            print(f"[itm callback] get_item_by_id орындалу уақыты: {dt_get:.3f}с (нәтиже={'табылды' if item else 'ТАБЫЛМАДЫ'})")
 
             if not item:
-                answer_callback(cb["id"], text="Мәлімет табылмады 😔", show_alert=True)
                 return
 
-            # tier алдымен анықтаймыз
+            t_access = time.perf_counter()
             has_access, tier = check_access(user_id, user_id == SYMBAT_ID)
-            print(f"[itm callback] tier={tier}")
+            dt_access = time.perf_counter() - t_access
+            print(f"[itm callback] check_access орындалу уақыты: {dt_access:.3f}с (tier={tier})")
 
-            # Хабарламаны форматтаймыз
+            t_format = time.perf_counter()
             text, markup = format_detail_message(item, confidence='exact',
                                                  lang=lang, tier=tier)
-            print(f"[itm callback] msg_len={len(text)}")
-
-            # answer_callback ФОРМАТТАУДАН КЕЙІН — хабарлама дайын болғанда
-            answer_callback(cb["id"])
+            dt_format = time.perf_counter() - t_format
+            print(f"[itm callback] format_detail_message орындалу уақыты: {dt_format:.3f}с (хабарлама ұзындығы={len(text)})")
 
             effect = None
             reaction = None
@@ -335,19 +360,44 @@ def handle_callback(cb):
                     effect = EFFECT_EXPIRED
                     reaction = "👎"
 
+            t_send = time.perf_counter()
             image_url = item.get("image_url", "")
+            
+            # Топтық чаттарда пайдаланушының бастапқы сұранысына тікелей жауап ретінде (reply) жіберу
+            reply_to_id = None
+            if chat_id != user_id:
+                msg_obj = cb.get("message") or {}
+                reply_to_id = (msg_obj.get("reply_to_message") or {}).get("message_id") or msg_obj.get("message_id")
+                from bot_sender import send_chat_action
+                # send_chat_action-ды фонында жібереміз, басты ағынды күттірмейді
+                threading.Thread(
+                    target=send_chat_action,
+                    args=(chat_id, "upload_photo" if image_url else "typing")
+                ).start()
+
             if image_url:
                 bot_msg_id = send_photo_message(chat_id, image_url, text,
                                                 reply_markup=markup,
-                                                message_effect_id=effect)
+                                                message_effect_id=effect,
+                                                reply_to_message_id=reply_to_id)
             else:
                 bot_msg_id = send_message(chat_id, text,
                                           reply_markup=markup,
-                                          message_effect_id=effect)
+                                          message_effect_id=effect,
+                                          reply_to_message_id=reply_to_id)
+            dt_send = time.perf_counter() - t_send
+            print(f"[itm callback] send_message/photo орындалу уақыты: {dt_send:.3f}с (bot_msg_id={bot_msg_id})")
 
-            print(f"[itm callback] bot_msg_id={bot_msg_id}")
+            # Реакция жіберуді фонда асинхронды жібереміз (бұғаттамайды)
             if reaction and bot_msg_id:
-                set_message_reaction(chat_id, bot_msg_id, reaction)
+                threading.Thread(
+                    target=set_message_reaction,
+                    args=(chat_id, bot_msg_id, reaction)
+                ).start()
+                print(f"[itm callback] Реакция фонда жіберілуге бағытталды")
+
+            dt_total = time.perf_counter() - t0
+            print(f"[itm callback] ЖАЛПЫ уақыт: {dt_total:.3f}с")
 
         except Exception as e:
             import traceback
