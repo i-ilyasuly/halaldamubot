@@ -79,6 +79,44 @@ def handle_message(msg):
     is_symbat = (chat_id == SYMBAT_ID)
     lang = get_user_language(chat_id) if not is_symbat else 'kz'
 
+    chat_type = msg["chat"].get("type", "private")
+    is_group = chat_type in ("group", "supergroup")
+
+    # ── ТОПТАҒЫ СҰРАНЫСТАРДЫ СҮЗГІЛЕУ (Фильтрация топтағы хабарламалар үшін) ──
+    if is_group:
+        if "location" in msg:
+            return  # Топтағы локацияларды елемейміз
+
+        if "photo" in msg:
+            caption = msg.get("caption", "") or ""
+            if "@halaldamu_bot" not in caption.lower():
+                return  # Бот аталмаған топтық суреттерді елемейміз
+
+        elif "text" in msg:
+            text = msg["text"]
+            if "@halaldamu_bot" not in text.lower():
+                return  # Бот аталмаған топтық хабарламаларды елемейміз
+
+            # Бот логинін мәтіннен алып тастаймыз
+            # Кез келген регистрді (@HalalDamu_bot) өшіру үшін regex қолданамыз
+            import re
+            cleaned_text = re.sub(r'(?i)@halaldamu_bot', '', text).strip()
+            
+            if not cleaned_text:
+                # Егер тек бот логині ғана жазылса, көмекші нұсқаулық жібереміз
+                help_text = (
+                    "🔍 <b>Топта іздеу нұсқаулығы:</b>\n"
+                    "Боттың логинін атап, қасына өнім атын немесе мекемені жазыңыз.\n\n"
+                    "<b>Мысалы:</b>\n"
+                    "• <code>@halaldamu_bot hani</code>\n"
+                    "• <code>@halaldamu_bot maki-maki</code>\n\n"
+                    "📸 Немесе топқа сурет жіберіп, сипаттамасына <code>@halaldamu_bot</code> деп жазыңыз."
+                )
+                send_message(chat_id, help_text, reply_to_message_id=user_msg_id)
+                return
+            
+            msg["text"] = cleaned_text  # Төмендегі іздеу блоктары үшін мәтінді жаңарту
+
     if "successful_payment" in msg:
         process_successful_payment(msg)
         return
@@ -89,7 +127,14 @@ def handle_message(msg):
         return
 
     if "photo" in msg:
+        import time
+        t0 = time.perf_counter()
+        
+        t_access = time.perf_counter()
         has_access, tier = check_access(chat_id, is_symbat)
+        dt_access = time.perf_counter() - t_access
+        print(f"[photo search] check_access орындалу уақыты: {dt_access:.3f}с")
+
         if not has_access:
             _msg, _markup = _access_denied_msg(lang, tier)
             log_to_bigquery(chat_id, "limit_hit", "photo_search", "Лимит бітті")
@@ -100,11 +145,18 @@ def handle_message(msg):
         send_chat_action(chat_id, "typing")
         placeholder_id = _send_placeholder(chat_id, user_msg_id)
 
+        t_dl = time.perf_counter()
         photo_id = msg["photo"][-1]["file_id"]
         image_bytes = download_photo(photo_id)
+        dt_dl = time.perf_counter() - t_dl
+        print(f"[photo search] download_photo орындалу уақыты: {dt_dl:.3f}с (мөлшері={len(image_bytes) if image_bytes else 0} байт)")
+
         if image_bytes:
             try:
+                t_hp = time.perf_counter()
                 result_msg, markup, item_image_url = handle_photo(image_bytes, chat_id, username, lang=lang)
+                dt_hp = time.perf_counter() - t_hp
+                print(f"[photo search] handle_photo (Vertex AI + іздеу) орындалу уақыты: {dt_hp:.3f}с")
             except Exception as e:
                 print(f"[handle_message] handle_photo қате: {e}")
                 result_msg = t("photo_error", lang)
@@ -127,6 +179,7 @@ def handle_message(msg):
             if placeholder_id:
                 delete_message(chat_id, placeholder_id)
 
+            t_send = time.perf_counter()
             if item_image_url:
                 bot_msg_id = send_photo_message(chat_id, item_image_url, result_msg,
                                                 reply_markup=markup, message_effect_id=effect,
@@ -134,13 +187,24 @@ def handle_message(msg):
             else:
                 bot_msg_id = send_message(chat_id, result_msg, reply_markup=markup,
                                           message_effect_id=effect, reply_to_message_id=user_msg_id)
+            dt_send = time.perf_counter() - t_send
+            print(f"[photo search] Хабарламаны пайдаланушыға жіберу уақыты: {dt_send:.3f}с")
+
             if reaction and bot_msg_id:
-                set_message_reaction(chat_id, bot_msg_id, reaction)
+                # Реакция жіберуді фонда асинхронды орындаймыз (бұғаттамайды)
+                import threading
+                threading.Thread(
+                    target=set_message_reaction,
+                    args=(chat_id, bot_msg_id, reaction)
+                ).start()
+                print(f"[photo search] Реакция фонда жіберілуге бағытталды")
+
             save_chat_history(chat_id, "user", "Мен саған бір сурет жібердім")
             save_chat_history(chat_id, "model", result_msg)
             log_to_bigquery(chat_id, "photo_search", "Сурет", "Тексерілді",
                             is_premium=(tier in ["premium", "VIP"]))
             increment_usage(chat_id)
+            print(f"[photo search] ЖАЛПЫ орындалу уақыты: {time.perf_counter() - t0:.3f}с")
         else:
             # Сурет жүктелмеді — placeholder-ді жойып, қолданушыға хабарлаймыз
             if placeholder_id:
@@ -579,7 +643,7 @@ def _handle_username_confirm(chat_id, user_msg_id, text, lang='kz'):
 
 # ── ІЗДЕУ НӘТИЖЕЛЕРІ ПАГИНАЦИЯСЫ ───────────────────────────────────────────
 
-def _build_search_results_page(all_items, page, per_page, session_id=None, query_text="", lang="kz"):
+def _build_search_results_page(all_items, page, per_page, session_id=None, query_text="", lang="kz", header_text=None):
     import math
     total = len(all_items)
     total_pages = math.ceil(total / per_page)
@@ -588,7 +652,10 @@ def _build_search_results_page(all_items, page, per_page, session_id=None, query
     start = (page - 1) * per_page
     items = all_items[start:start + per_page]
 
-    reply_text = t("search_results_header", lang, total=total, page=page, total_pages=total_pages)
+    if header_text:
+        reply_text = header_text
+    else:
+        reply_text = t("search_results_header", lang, total=total, page=page, total_pages=total_pages)
     keyboard = []
 
     for idx, item in enumerate(items, start=start + 1):
