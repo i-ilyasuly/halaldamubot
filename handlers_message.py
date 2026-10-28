@@ -87,12 +87,8 @@ def handle_message(msg):
         if "location" in msg:
             return  # Топтағы локацияларды елемейміз
 
-        if "photo" in msg:
-            caption = msg.get("caption", "") or ""
-            if "@halaldamu_bot" not in caption.lower():
-                return  # Бот аталмаған топтық суреттерді елемейміз
-
-        elif "text" in msg:
+        # Топтағы суреттерді сипаттамада бот аталмаса да өңдейміз.
+        if "text" in msg and "photo" not in msg:
             text = msg["text"]
             if "@halaldamu_bot" not in text.lower():
                 return  # Бот аталмаған топтық хабарламаларды елемейміз
@@ -110,7 +106,7 @@ def handle_message(msg):
                     "<b>Мысалы:</b>\n"
                     "• <code>@halaldamu_bot hani</code>\n"
                     "• <code>@halaldamu_bot maki-maki</code>\n\n"
-                    "📸 Немесе топқа сурет жіберіп, сипаттамасына <code>@halaldamu_bot</code> деп жазыңыз."
+                    "📸 Немесе топқа жай ғана сурет жіберіңіз — бот оны автоматты түрде тексереді."
                 )
                 send_message(chat_id, help_text, reply_to_message_id=user_msg_id)
                 return
