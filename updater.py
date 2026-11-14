@@ -1,7 +1,5 @@
 import requests
-from google.cloud import firestore
-
-db = firestore.Client()
+from db_core import db
 
 def extract_list(api_data):
     """API-дан келген мәліметтің ішінен нақты тізімді (list) тауып алатын ақылды функция"""
