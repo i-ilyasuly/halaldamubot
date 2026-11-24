@@ -17,7 +17,20 @@ _PROCESSED_MAX = 500   # кэш өсіп кетпес үшін шек
 
 
 @functions_framework.http
+def whatsapp_webhook(request):
+    """WhatsApp-қа арналған жеке кіру нүктесі (--entry-point whatsapp_webhook)."""
+    from wa_handlers import handle_whatsapp_request
+    return handle_whatsapp_request(request)
+
+
+@functions_framework.http
 def telegram_webhook(request):
+    # Meta (WhatsApp) сұраныстары осы URL-ға келсе де өңделеді —
+    # жаңа Cloud Function деплой жасамай-ақ қосуға болады.
+    from wa_handlers import is_whatsapp_request
+    if is_whatsapp_request(request):
+        return whatsapp_webhook(request)
+
     if request.method == "GET":
         if request.args.get("cron_key") == CRON_SECRET:
             result = update_database()

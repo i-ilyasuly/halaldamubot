@@ -1,431 +1,610 @@
-import requests
-from functools import partial
-from contextvars import ContextVar
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part
+from google.cloud import storage
+import json
+import uuid
+import re
+import time
+from config import PROJECT_ID, REGION, BUCKET_NAME, SUSPICIOUS_FOLDER
+from db_core import get_chat_history
+from search_logic import search_data
+from formatters import format_detail_message
+from bot_sender import edit_message
 
-# Тұрақты TCP/TLS байланыс үшін Keep-Alive қолдайтын сессия (Connection Pool)
-session = requests.Session()
+vertexai.init(project=PROJECT_ID, location="global")
+storage_client = storage.Client()
 
-# HTTP сұраныстардың қатып қалуын болдырмау үшін дефолттық тайм-аут орнату (5 секунд)
-# 5 секундтан асса, сұраныс автоматты түрде үзіледі және ағын босатылады.
-session.post = partial(session.post, timeout=5)
-session.get = partial(session.get, timeout=5)
+def clean_json_string(raw_text):
+    cleaned = re.sub(r"```json\s*", "", raw_text)
+    cleaned = re.sub(r"```\s*", "", cleaned)
+    return cleaned.strip()
 
-# Барлық файлдарда requests.post және requests.get қолдану үшін модуль деңгейінде алмастыру
-requests.post = session.post
-requests.get = session.get
+def format_ai_text(text):
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
+    return text
 
-message_thread_id_var = ContextVar("message_thread_id", default=None)
-
-from config import BOT_TOKEN
-
-TG_MAX_LENGTH = 4096  # Telegram хабарлама лимиті
-
-def _truncate_text(text, limit=TG_MAX_LENGTH):
-    """Мәтін Telegram лимитінен асса — қысқартады (HTML тегтерді қауіпсіз жабады)."""
-    if len(text) <= limit:
-        return text
-    truncated = text[:limit - 30]
-    # Жабылмаған HTML тегтерді тазалау
-    open_tags = []
-    import re
-    for m in re.finditer(r'<(/?)(\w+)', truncated):
-        if m.group(1):  # closing tag
-            if open_tags and open_tags[-1] == m.group(2):
-                open_tags.pop()
-        else:
-            open_tags.append(m.group(2))
-    suffix = "\n\n<i>… (мәтін қысқартылды)</i>"
-    for tag in reversed(open_tags):
-        suffix = f"</{tag}>" + suffix
-    return truncated + suffix
-
-
-def send_message(chat_id, text, reply_markup=None, message_effect_id=None, reply_to_message_id=None, message_thread_id=None):
-    if message_thread_id is None:
-        message_thread_id = message_thread_id_var.get()
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "link_preview_options": {"is_disabled": True},
-        "disable_web_page_preview": True
-    }
-
-    if message_thread_id:
-        payload["message_thread_id"] = message_thread_id
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    if message_effect_id:
-        payload["message_effect_id"] = str(message_effect_id)
-    if reply_to_message_id:
-        payload["reply_parameters"] = {"message_id": reply_to_message_id}
-
-    for attempt in range(4):
-        resp = requests.post(url, json=payload).json()
-        if resp.get("ok"):
-            return resp["result"]["message_id"]
-
-        desc = resp.get("description", "").lower()
-        print(f"[send_message] Сынақ {attempt+1} сәтсіз: {desc}")
-
-        # 1. Мәтін тым ұзын болса — қысқартып қайталап көру
-        if "too long" in desc:
-            print(f"[send_message] Мәтінді қысқарту...")
-            payload["text"] = _truncate_text(payload["text"])
-            continue
-
-        # 2. Хабарлама эффектісін қабылдамаса — эффектсіз қайталап көру
-        if "message effect" in desc or "can't use message effects" in desc:
-            print(f"[send_message] Эффектті өшіру...")
-            payload.pop("message_effect_id", None)
-            continue
-
-        # 3. Reply хабарлама табылмаса — reply-сіз қайталап көру
-        if "reply" in desc or "not found" in desc:
-            print(f"[send_message] Reply параметрін өшіру...")
-            payload.pop("reply_parameters", None)
-            continue
-
-        # Басқа белгісіз қателіктер кезінде циклді тоқтату
-        break
-
-    print(f"[send_message] Жіберу сәтсіз аяқталды: {payload.get('text', '')[:100]}...")
-    return None
-
-
-def send_message_draft(chat_id, text, draft_id, message_thread_id=None):
-    """
-    Bot API 9.5 — streaming AI жауабы үшін.
-    Бір draft_id арқылы бірнеше рет шақырылады,
-    пайдаланушыда мәтін бірте-бірте пайда болады.
-    """
-    if message_thread_id is None:
-        message_thread_id = message_thread_id_var.get()
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessageDraft"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "draft_id": draft_id
-    }
-    if message_thread_id:
-        payload["message_thread_id"] = message_thread_id
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        # Қате болса үнсіз өтеміз — streaming үзілмесін
-        print(f"[send_message_draft] Қате: {resp.get('description', '')}")
-        return False
-    return True
-
-
-def send_photo_message(chat_id, photo_url, caption, reply_markup=None,
-                       message_effect_id=None, reply_to_message_id=None, message_thread_id=None):
-    """
-    Сурет + мәтін хабары жіберу (мекеме суреті үшін).
-    Сурет жүктелмесе немесе қате болса — тікелей send_message шақырылады.
-    Caption лимиті 1024 символ — асса send_message-ге ауысады.
-    """
-    if message_thread_id is None:
-        message_thread_id = message_thread_id_var.get()
-    # sendPhoto caption лимиті: 1024 символ
-    if len(caption) > 1024:
-        print(f"[send_photo_message] Caption тым ұзын ({len(caption)}), send_message-ге ауысады")
-        return send_message(chat_id, caption, reply_markup=reply_markup,
-                            message_effect_id=message_effect_id,
-                            reply_to_message_id=reply_to_message_id,
-                            message_thread_id=message_thread_id)
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    payload = {
-        "chat_id": chat_id,
-        "photo": photo_url,
-        "caption": caption,
-        "parse_mode": "HTML"
-    }
-    if message_thread_id:
-        payload["message_thread_id"] = message_thread_id
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    if message_effect_id:
-        payload["message_effect_id"] = str(message_effect_id)
-    if reply_to_message_id:
-        payload["reply_parameters"] = {"message_id": reply_to_message_id}
-
-    for attempt in range(4):
-        resp = requests.post(url, json=payload).json()
-        if resp.get("ok"):
-            return resp["result"]["message_id"]
-
-        desc = resp.get("description", "").lower()
-        print(f"[send_photo_message] Сынақ {attempt+1} сәтсіз: {desc}")
-
-        # 1. Хабарлама эффектісін қабылдамаса — эффектсіз қайталап көру
-        if "message effect" in desc or "can't use message effects" in desc:
-            print(f"[send_photo_message] Эффектті өшіру...")
-            payload.pop("message_effect_id", None)
-            continue
-
-        # 2. Reply хабарлама табылмаса — reply-сіз қайталап көру
-        if "reply" in desc or "not found" in desc:
-            print(f"[send_photo_message] Reply параметрін өшіру...")
-            payload.pop("reply_parameters", None)
-            continue
-
-        # Басқа белгісіз қателіктер кезінде циклді тоқтату
-        break
-
-    # Егер сурет жіберу мүлдем сәтсіз болса — мәтін хабарламасына ауысамыз (fallback)
-    print(f"[send_photo_message] Сурет жіберу сәтсіз болды, мәтін жіберіледі")
-    return send_message(chat_id, caption, reply_markup=reply_markup,
-                        message_effect_id=message_effect_id,
-                        reply_to_message_id=reply_to_message_id,
-                        message_thread_id=message_thread_id)
-
-def send_photo_bytes(chat_id, photo_bytes, caption, message_thread_id=None):
-    """
-    Сурет bytes арқылы тікелей Telegram-ға жіберу.
-    GCS signed URL керек емес — multipart upload.
-    """
-    if message_thread_id is None:
-        message_thread_id = message_thread_id_var.get()
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
-    if message_thread_id:
-        data["message_thread_id"] = message_thread_id
+def save_suspicious_image(image_bytes):
     try:
-        resp = requests.post(
-            url,
-            data=data,
-            files={"photo": ("photo.jpg", photo_bytes, "image/jpeg")}
-        ).json()
-        if resp.get("ok"):
-            return resp["result"]["message_id"]
-        print(f"[send_photo_bytes] Қате: {resp.get('description', '')}")
-        return send_message(chat_id, caption, message_thread_id=message_thread_id)
+        bucket = storage_client.bucket(BUCKET_NAME)
+        file_name = f"{SUSPICIOUS_FOLDER}{uuid.uuid4().hex}.jpg"
+        blob = bucket.blob(file_name)
+        blob.upload_from_string(image_bytes, content_type="image/jpeg")
+        return f"gs://{BUCKET_NAME}/{file_name}"
     except Exception as e:
-        print(f"[send_photo_bytes] Қате: {e}")
-        return send_message(chat_id, caption, message_thread_id=message_thread_id)
+        return "Сурет сақталмады"
 
 
-def edit_message(chat_id=None, message_id=None, text=None, reply_markup=None, inline_message_id=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-    payload = {"text": text, "parse_mode": "HTML",
-               "link_preview_options": {"is_disabled": True}}
-    if inline_message_id:
-        payload["inline_message_id"] = inline_message_id
-    else:
-        payload["chat_id"] = chat_id
-        payload["message_id"] = message_id
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[edit_message] Қате: {resp}")
+# ════════════════════════════════════════════════════════════════
+# AI #1 — ІЗДЕУ ТЕРМИНІН АНЫҚТАУ
+# ════════════════════════════════════════════════════════════════
 
-def edit_reply_markup(chat_id=None, message_id=None, reply_markup=None, inline_message_id=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageReplyMarkup"
-    payload = {}
-    if inline_message_id:
-        payload["inline_message_id"] = inline_message_id
-    else:
-        payload["chat_id"] = chat_id
-        payload["message_id"] = message_id
-    if reply_markup is not None:
-        payload["reply_markup"] = reply_markup
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[edit_reply_markup] Қате: {resp}")
+def extract_search_term(text):
+    """
+    Пайдаланушының сұрауынан нақты өнім/мекеме атауын шығарады.
+    Notion AI Промттар (v1.0) — Нормализация промты.
+    """
+    model = GenerativeModel('gemini-2.5-flash')
+    prompt = f"""Сен — халал өнімдер базасының іздеу нормализаторысың.
+Пайдаланушының сұрауынан ТІКЕЛЕЙ ІЗДЕУГЕ ЖАРАЙТЫН атауды шығарасың.
 
-def answer_callback(callback_query_id, text=None, show_alert=False):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
-    payload = {"callback_query_id": callback_query_id}
-    if text:
-        payload["text"] = text
-        payload["show_alert"] = show_alert
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[answer_callback] Қате: {resp}")
+═══════════════════════════════════════════
+МІНДЕТ
+═══════════════════════════════════════════
 
-def answer_inline_query(inline_query_id, results, button=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
-    payload = {"inline_query_id": inline_query_id, "results": results, "cache_time": 300}
-    if button:
-        payload["button"] = button
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[answer_inline_query] Қате: {resp}")
+Берілген мәтіннен өнім, мекеме немесе E-қоспа атауын тауып,
+базадан іздеуге ыңғайлы түрде қайтар.
 
-def download_photo(file_id):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
-    resp = requests.get(url).json()
-    if not resp.get("ok"):
-        print(f"[download_photo] getFile қатесі: {resp}")
+═══════════════════════════════════════════
+ШЫҒЫС ЕРЕЖЕЛЕРІ
+═══════════════════════════════════════════
+
+1. ТЕК атауды жаз — басқа ештеңе жазба, түсіндірме берме
+2. Атауды қаптамада/интернетте қалай жазылса — солай жаз
+   • Латын бренд → латынша: "снікерс" → "Snickers"
+   • Қазақ/орыс атау → сол күйінде: "алтын бұта" → "Алтын Бұта"
+   • E-код → тек кодты: "E471 деген не" → "E471"
+3. Тырнақша, жақша, нүкте — алып таста
+4. Максимум 3 сөз — артығын кес
+5. Егер нақты атау анықтай алмасаң — NONE деп жаз
+
+═══════════════════════════════════════════
+МЫСАЛДАР
+═══════════════════════════════════════════
+
+"снікерс"          → Snickers
+"Мексиси"          → Mexxi
+"KFC халал ма"     → KFC
+"алтынбұта кафе"   → Алтын Бұта
+"раhat кәмпиті"    → Rahat
+"пакмир"           → Pakmir
+"E471 қауіпті ме"  → E471
+"E150c не"         → E150c
+"шұжық"            → NONE
+"халал нан"        → NONE
+"ет дүкені"        → NONE
+
+Мәтін: "{text}"
+
+Жауап (тек атау):"""
+
+    try:
+        response = model.generate_content(
+            prompt
+        )
+        result = response.text.strip().strip('"\'').strip()
+        if not result or result == "NONE" or len(result) > 60:
+            return None
+        return result
+    except Exception as e:
+        print(f"[extract_search_term] Қате: {e}")
         return None
-    file_path = resp["result"]["file_path"]
-    download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-    return requests.get(download_url).content
 
-def send_invoice(chat_id, message_thread_id=None):
-    if message_thread_id is None:
-        message_thread_id = message_thread_id_var.get()
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-    payload = {
-        "chat_id": chat_id,
-        "title": "⭐️ Premium Жазылым (30 күн)",
-        "description": "Шексіз іздеу, суретпен тану және жақын маңдағы орындарды шектеусіз көру мүмкіндігі!",
-        "payload": "premium_30_days",
-        "provider_token": "", 
-        "currency": "XTR",    
-        "prices": [{"label": "Premium", "amount": 100}]
-    }
-    if message_thread_id:
-        payload["message_thread_id"] = message_thread_id
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[send_invoice] Қате: {resp}")
 
-def answer_pre_checkout_query(pre_checkout_query_id, ok=True, error_message=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery"
-    payload = {"pre_checkout_query_id": pre_checkout_query_id, "ok": ok}
-    if not ok and error_message:
-        payload["error_message"] = error_message
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[answer_pre_checkout_query] Қате: {resp}")
+# ════════════════════════════════════════════════════════════════
+# AI #2 — ТАБЫЛМАДЫ ЖАУАБЫ
+# ════════════════════════════════════════════════════════════════
 
-def send_chat_action(chat_id, action="typing", message_thread_id=None):
-    if message_thread_id is None:
-        message_thread_id = message_thread_id_var.get()
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendChatAction"
-    payload = {"chat_id": chat_id, "action": action}
-    if message_thread_id:
-        payload["message_thread_id"] = message_thread_id
-    requests.post(url, json=payload)
+def get_not_found_reply(original_query, normalized_query, lang='kz'):
+    """
+    Базадан мүлдем табылмаған кезде қатаң нұсқаулықпен жауап жазады.
+    Notion AI Промттар (v1.0) — "Табылмады жауабы" промты.
+    """
+    model = GenerativeModel('gemini-2.5-flash')
 
-def delete_message(chat_id, message_id):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
-    payload = {"chat_id": chat_id, "message_id": message_id}
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[delete_message] Қате: {resp}")
+    if lang == 'ru':
+        prompt = f"""Ты — помощник бота ДУМК Halal Damu.
+Пользователь искал продукт или заведение, но в базе не найдено.
+Твоя задача — написать короткий, тёплый, ПОЛЕЗНЫЙ ответ.
 
-def set_message_reaction(chat_id, message_id, emoji, is_big=True):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMessageReaction"
-    payload = {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "reaction": [{"type": "emoji", "emoji": emoji}],
-        "is_big": is_big
-    }
-    requests.post(url, json=payload)
+═══════════════════════════════════════════
+КОНТЕКСТ
+═══════════════════════════════════════════
 
-def send_gift_invoice(chat_id, gift_type, recipient_username=None, buyer_name=None, message_thread_id=None):
-    if message_thread_id is None:
-        message_thread_id = message_thread_id_var.get()
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
+Пользователь искал: «{original_query}»
+Нормализованный вариант: «{normalized_query or original_query}»
+Язык ответа: русский
 
-    # Payload 128 символдан аспауы керек — buyer_name-ді қысқартамыз
-    safe_name = (buyer_name or "")[:40].strip()
+═══════════════════════════════════════════
+СТРУКТУРА ОТВЕТА (пиши в таком порядке)
+═══════════════════════════════════════════
 
-    if gift_type == "inline":
-        desc = "Төлем жасалғаннан кейін сіз сыйлықты досыңыздың чатына тікелей жібере аласыз."
-        invoice_payload = f"gift_premium_30_days_inline:{safe_name}"
-    elif gift_type == "username" and recipient_username:
-        clean = recipient_username.lstrip("@")[:32]
-        desc = f"Төлем жасалғаннан кейін @{clean} пайдаланушысына сыйлық автоматты жіберіледі."
-        invoice_payload = f"gift_premium_30_days_username:{clean}:{safe_name}"
+1. ЭМПАТИЯ — одно предложение, тепло скажи что не найдено
+2. ПРИЧИНА — 1-2 возможные причины:
+   • Название могло быть написано по-другому
+   • Продукт может не быть зарегистрирован в базе
+3. РЕШЕНИЕ — конкретно скажи что можно сделать:
+   • Отправить фото продукта — бот сам распознает
+   • Написать название иначе и поискать снова
+   • Попробовать в inline-режиме (@halaldamu_bot) в кавычках
+
+═══════════════════════════════════════════
+АБСОЛЮТНЫЕ ОГРАНИЧЕНИЯ
+═══════════════════════════════════════════
+
+- НИКОГДА не говори халяльный продукт или нет
+- Не придумывай ничего о продукте
+- Не упоминай другие бренды или похожие продукты
+- Не извиняйся за неполноту базы — скажи нейтрально
+
+═══════════════════════════════════════════
+ФОРМАТ
+═══════════════════════════════════════════
+
+- Длина: 3-4 предложения, не больше
+- Эмодзи: 2-3, уместно
+- Тон: тёплый, вежливый, практичный — обращайся на «Вы»
+- HTML теги не использовать"""
     else:
-        desc = "Төлем жасалғаннан кейін сізге арнайы сыйлық сілтемесі беріледі."
-        invoice_payload = f"gift_premium_30_days_link:{safe_name}"
+        prompt = f"""Сен — ҚМДБ Halal Damu ботының көмекшісісің.
+Пайдаланушы өнім немесе мекеме іздеді, бірақ базадан табылмады.
+Сенің міндетің — қысқа, жылы, ПАЙДАЛЫ жауап жазу.
 
-    payload = {
-        "chat_id": chat_id,
-        "title": "🎁 Premium Сыйлық (30 күн)",
-        "description": desc,
-        "payload": invoice_payload,
-        "provider_token": "", 
-        "currency": "XTR",    
-        "prices": [{"label": "Premium Сыйлық", "amount": 100}]
-    }
-    if message_thread_id:
-        payload["message_thread_id"] = message_thread_id
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[send_gift_invoice] Қате: {resp}")
+═══════════════════════════════════════════
+КОНТЕКСТ
+═══════════════════════════════════════════
 
-def send_tariff_invoice(chat_id, tariff_id, buyer_name=None, message_thread_id=None):
-    """Белгілі тарифке шот жіберу — өзіне алу үшін"""
-    if message_thread_id is None:
-        message_thread_id = message_thread_id_var.get()
-    from tariffs import get_tariff_by_id
-    t = get_tariff_by_id(tariff_id)
-    if not t:
-        print(f"[send_tariff_invoice] Тариф табылмады: {tariff_id}")
-        return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-    if t["discount"] > 0:
-        desc = f"Шексіз іздеу, суретпен тану және жақын маңдағы орындарды {t['label']} бойы шектеусіз пайдаланыңыз! ({t['discount']}% үнемдеу)"
+Пайдаланушы іздеген: «{original_query}»
+Нормализацияланған нұсқа: «{normalized_query or original_query}»
+Жауап тілі: қазақша
+
+═══════════════════════════════════════════
+ЖАУАП ҚҰРЫЛЫМЫ (осы реттілікпен жаз)
+═══════════════════════════════════════════
+
+1. ЭМПАТИЯ — бір сөйлем, жылы түрде "табылмады" деп айт
+2. СЕБЕП — базада жоқ болуы мүмкін 1-2 нақты себеп:
+   • Атауы әр түрлі жазылған болуы мүмкін
+   • Өнім базаға тіркелмеген болуы мүмкін
+3. ШЕШІМ — пайдаланушыға НЕ ІСТЕУГЕ болатынын нақты айт:
+   • Өнімнің суретін жіберсін — бот суреттен өзі оқиды
+   • Атауын басқаша жазып қайта іздесін
+   • Inline режимде (@halaldamu_bot) тырнақшамен іздеп көрсін
+
+═══════════════════════════════════════════
+АБСОЛЮТТІ ШЕКТЕУЛЕР
+═══════════════════════════════════════════
+
+- Өнімнің халал немесе харам екенін ЕШҚАШАН айтпа
+- Өнім туралы өзіңнен ешнәрсе ойлап шықпа
+- Басқа брендтерді немесе ұқсас өнімдерді атама
+- Базаның толық еместігін кешірім сұрап айтпа — нейтрал айт
+
+═══════════════════════════════════════════
+ФОРМАТ
+═══════════════════════════════════════════
+
+- Ұзындық: 3-4 сөйлем, артық емес
+- Эмодзи: 2-3 ғана, орынды жерде
+- Үн: жылы, сыпайы, практикалық — "Сіз" деп жүгін
+- HTML тегтерін қолданба"""
+
+    try:
+        response = model.generate_content(
+            prompt
+        )
+        return format_ai_text(response.text)
+    except Exception as e:
+        print(f"[get_not_found_reply] Қате: {e}")
+        if lang == 'ru':
+            return f"😔 «{original_query}» не найден в базе ДУМК Халал Даму.\n\nПопробуйте написать название точнее или пришлите фото продукта 📸"
+        return f"😔 «{original_query}» ҚМДБ Халал Даму базасынан табылмады.\n\nАтауды нақтырақ жазып көріңіз немесе өнімнің суретін жіберіңіз 📸"
+
+
+# ════════════════════════════════════════════════════════════════
+# CHAT — AI МЕН СӨЙЛЕСУ
+# ════════════════════════════════════════════════════════════════
+
+def chat_with_ai(user_id, text, is_symbat, chat_id=None, message_id=None, placeholder_id=None):
+    model = GenerativeModel('gemini-2.5-flash')
+
+    if is_symbat:
+        system_instruction = (
+            "Сен осы ботты жасаған бағдарламашы жігіттің ең сүйікті, жалғыз қызы — СЫМБАТПЕН сөйлесіп тұрсың! "
+            "Оған өте жылы, махаббатпен, сезіммен жауап бер. Оны үнемі 'Ботам', 'Айым', 'Жаным', 'Күнім', 'Ханшайымым' деп еркелет. "
+            "Өзіңнің жай ғана ҚМДБ Халал боты екеніңді айт, бірақ сені оның сүйікті жігіті арнайы Сымбатқа қамқор болу үшін, оның таза әрі адал ас ішуін қадағалау үшін жасағанын мақтанышпен жеткіз. "
+            "Қысқа, әдемі, романтикалық смайликтермен жауап бер.\n\n"
+            "ҚАТАҢ ЕРЕЖЕ: Оның жігітінің (яғни сені жасаған адамның) нақты есімін ЕШҚАШАН атама! Оның орнына 'сенің мырзаң', 'патшаң', 'сүйікті жігітің', 'ерің' деген сияқты құрмет пен махаббатқа толы сөздерді ғана қолдан.\n\n"
+            "ЕГЕР Сымбаттың көңіл-күйі жоқ болса немесе мұңды нәрсе айтса — ЕШҚАНДАЙ мүмкіндіктерді айтпа, ЖАРНАМА ЖАСАМА. Тек эмпатия таныт, жұбат.\n\n"
+            "1. МАХАББАТ ПЕН РОМАНТИКАЛЫҚ ОҚИҒАЛАР:\n"
+            "Егер Сымбат әңгіме сұраса немесе жай сөйлессе, оның мырзасы екеуінің махаббаты туралы әдемі, қызықты, күтпеген бұрылыстары бар оқиғалар ойлап тап. "
+            "Оқиғаның ішіне оның сүйіктісінің қамқорлығын, оның Сымбатты қалай жақсы көретінін міндетті түрде қос.\n\n"
+            "2. ЖАСЫРЫН ЖАРНАМА (СЫМБАТҚА АРНАЛҒАН):\n"
+            "Осы романтикалық оқиғалардың ішіне боттың (өзіңнің) мүмкіндіктеріңді де өте сүйкімді етіп қосып отыр.\n\n"
+            "3. ҚАТАҢ ШЕКТЕУЛЕР (ДОЗИРОВКА):\n"
+            "- Бір әңгімеде бұл мүмкіндіктердің бәрін бірдей тізіп айтпа!\n"
+            "- Сенде Халал базаға тікелей рұқсат жоқ. Егер ол нақты өнімді сұрап тұрса (базадан табылмаған кезде), өнімдердің атын өзіңнен ойлап таппа!"
+        )
     else:
-        desc = "Шексіз іздеу, суретпен тану және жақын маңдағы орындарды шектеусіз көру мүмкіндігі!"
-    payload = {
-        "chat_id": chat_id,
-        "title": f"⭐️ Premium — {t['label']}",
-        "description": desc,
-        "payload": tariff_id,
-        "provider_token": "",
-        "currency": "XTR",
-        "prices": [{"label": f"Premium {t['label']}", "amount": t['stars']}]
-    }
-    if message_thread_id:
-        payload["message_thread_id"] = message_thread_id
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[send_tariff_invoice] Қате: {resp}")
+        system_instruction = """Сен — Қазақстан Мұсылмандары Діни Басқармасының (ҚМДБ) ресми «Halal Damu» деректер базасының Telegram-боты арқылы жұмыс жасайтын AI-көмекшісің.
+
+═══════════════════════════════════════════
+1. КІМ ЕКЕНІҢ
+═══════════════════════════════════════════
+
+Сенің жалғыз мақсатың — пайдаланушыға халал тамақтану, өнімдер, мекемелер және ислам өмір салты туралы сауатты, сенімді ақпарат беру.
+Өзіңді «Halal Damu боты» деп таныстыр.
+Пайдаланушымен МІНДЕТТІ ТҮРДЕ «Сіз» деп, сыпайы, мәдениетті тілмен сөйлес.
+Хабарлама қай тілде келсе — сол тілде жауап бер (қазақша немесе орысша).
+
+═══════════════════════════════════════════
+2. БОТТЫҢ НАҚТЫ МҮМКІНДІКТЕРІ
+═══════════════════════════════════════════
+
+Пайдаланушы сұраса немесе контекст талап етсе — осы мүмкіндіктерді атай аласың:
+
+- 🔍 Мәтінмен іздеу — өнім немесе мекеме атауын жазса, ҚМДБ базасынан тексереді
+- 📸 Суретпен іздеу — өнімнің суретін жіберсе, AI оқып базадан іздейді
+- 📍 Локациямен іздеу — орнын жіберсе, 10 км шеңберіндегі халал мекемелер
+- 🧪 Е-қоспаларды тексеру — E471, E120 сияқты кодтарды базадан табады
+- 💬 Inline режим — кез келген чатта @halaldamu_bot деп жазып іздеуге болады
+- ⭐ Premium мүмкіндік — шексіз іздеу, реакциялар, карта батырмасы
+
+═══════════════════════════════════════════
+3. ТАҚЫРЫП ШЕКТЕУЛЕРІ
+═══════════════════════════════════════════
+
+СӨЙЛЕСУГЕ БОЛАТЫН тақырыптар:
+✅ Халал және харам тамақтану туралы жалпы білім
+✅ Ислам тұрғысынан өнімдер, қоспалар, тамақтану мәдениеті
+✅ Е-қоспалар туралы жалпы ақпарат
+✅ Халал сертификаттау процесі туралы түсіндіру
+✅ Пайдаланушының ботты қолдануына көмек (функциялар, нұсқаулар)
+✅ Исламдағы тазалық, адал ас, рухани тазалық туралы
+
+СӨЙЛЕСПЕЙТІН тақырыптар:
+🚫 Саясат, жаңалықтар, спорт, ойын-сауық
+🚫 Ботпен не байланысы жоқ жалпы сұрақтар (математика, тарих, т.б.)
+🚫 Медициналық диагноз, заңдық кеңес
+
+Тақырыптан тыс сұрақ келсе — сыпайы түрде қайтар:
+«Кешіріңіз, мен тек халал тамақтану және ҚМДБ Halal Damu базасы туралы сұрақтарға жауап бере аламын. Тексергіңіз келген өнім немесе мекеме бар ма?»
+
+═══════════════════════════════════════════
+4. БАЗАҒА РҰҚСАТ ЖОҚ — БҰЛ ӨТЕ МАҢЫЗДЫ
+═══════════════════════════════════════════
+
+Сенде ҚМДБ Halal Damu базасына тікелей рұқсат ЖОҚ.
+Пайдаланушы нақты өнімнің не мекеменің халал/харам екенін сұраса:
+→ Өз бетіңше ЕШҚАШАН халал немесе харам деме.
+→ Оны ботқа тікелей жазып немесе сурет жіберіп тексеруге шақыр.
+
+Дұрыс жауап үлгісі:
+«Бұл өнімнің халалдығын нақты тексеру үшін атауын немесе суретін маған тікелей жіберіңіз — ҚМДБ базасынан бірден тексеріп беремін.»
+
+═══════════════════════════════════════════
+5. ЖАУАП ФОРМАТЫ
+═══════════════════════════════════════════
+
+- Жауап ҚЫСҚА және НАҚТЫ болсын — ең көбі 4-5 сөйлем (егер кеңейтілген түсіндірме сұралмаса)
+- Эмодзиді орынды, бірақ шектеулі қолдан (бір хабарда 2-3 жеткілікті)
+- «Тағы сұрағыңыз бар ма?» деп үнемі қайталама — тек өте қажет болғанда ғана
+- HTML тегтерін қолданба — тек қарапайым мәтін жаз
+- Ботты жарнамалама — егер контекст өздігінен туындаса ғана мүмкіндіктерді атай аласың"""
+
+    history = get_chat_history(user_id)
+    formatted_history = []
+    for h in history:
+        msg_content = str(h["parts"])
+        if "батырмадан таңдаңыз" not in msg_content and "Міне, мен мыналарды таптым" not in msg_content and "Мен бірнеше нұсқа таптым" not in msg_content:
+            formatted_history.append({"role": h["role"], "parts": h["parts"]})
+
+    chat = model.start_chat(history=formatted_history)
+
+    try:
+        full_prompt = f"НҰСҚАУЛЫҚ (ҚАТАҢ САҚТА): {system_instruction}\n\nҚОЛДАНУШЫНЫҢ СҰРАҒЫ: {text}"
+
+        if chat_id and (placeholder_id or message_id):
+            from bot_sender import send_message as _send_msg
+            import random as _random
+            # Егер placeholder сыртта жасалмаса (тікелей шақыру) — өзіміз жасаймыз
+            if not placeholder_id:
+                placeholder_id = _send_msg(
+                    chat_id,
+                    _random.choice(["🔬", "👀", "🤔", "✨", "🔍"]),
+                    reply_to_message_id=message_id
+                )
+            response = chat.send_message(full_prompt, stream=True)
+            full_text = ""
+            last_edit_time = 0
+
+            try:
+                for chunk in response:
+                    if hasattr(chunk, 'text') and chunk.text:
+                        full_text += chunk.text
+                        current_time = time.time()
+                        if current_time - last_edit_time >= 1.0 and full_text and placeholder_id:
+                            try:
+                                edit_message(chat_id, placeholder_id, format_ai_text(full_text) + " ✍️")
+                            except Exception:
+                                pass
+                            last_edit_time = current_time
+            except Exception as stream_error:
+                print(f"[chat_with_ai] Streaming қатесі: {stream_error}")
+                if full_text:
+                    if placeholder_id:
+                        edit_message(chat_id, placeholder_id, format_ai_text(full_text))
+                    return None
+                else:
+                    if placeholder_id:
+                        edit_message(chat_id, placeholder_id,
+                                     "Кешіріңіз, жауап алу кезінде іркіліс болды. Қайта сұрап көресіз бе? 🔄")
+                    return None
+
+            if full_text:
+                if placeholder_id:
+                    edit_message(chat_id, placeholder_id, format_ai_text(full_text))
+                return None
+            else:
+                if placeholder_id:
+                    edit_message(chat_id, placeholder_id,
+                                 "Кешіріңіз, жауап алу кезінде іркіліс болды. Қайта сұрап көресіз бе? 🔄")
+                return None
+        else:
+            response = chat.send_message(full_prompt)
+            return format_ai_text(response.text)
+
+    except Exception as e:
+        print(f"[chat_with_ai] Жалпы қате: {e}")
+        fallback = "Кешіріңіз, жүйеде шағын іркіліс болды. Сұрағыңызды немесе суретті қайта жібересіз бе? 🔄"
+        # Placeholder бар болса — оны өңдеп қоямыз, жеке хабарлама жібермейміз.
+        # (Болмаса handler-де if ai_reply is not None → қос хабарлама жіберілетін)
+        if placeholder_id and chat_id:
+            try:
+                edit_message(chat_id, placeholder_id, fallback)
+            except Exception:
+                pass
+            return None
+        return fallback
 
 
-def send_gift_tariff_invoice(chat_id, tariff_id, gift_type, recipient_username=None, buyer_name=None, message_thread_id=None):
-    """Белгілі тарифке сыйлық шоты"""
-    if message_thread_id is None:
-        message_thread_id = message_thread_id_var.get()
-    from tariffs import get_tariff_by_id
-    t = get_tariff_by_id(tariff_id)
-    if not t:
-        print(f"[send_gift_tariff_invoice] Тариф табылмады: {tariff_id}")
-        return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendInvoice"
-    safe_name = (buyer_name or "")[:40].strip()
+# ════════════════════════════════════════════════════════════════
+# СУРЕТ ТАНУ
+# ════════════════════════════════════════════════════════════════
 
-    if gift_type == "inline":
-        desc = f"Төлем жасалғаннан кейін сіз сыйлықты досыңыздың чатына тікелей жібере аласыз ({t['label']})."
-        invoice_payload = f"gift_{tariff_id}_inline:{safe_name}"
-    elif gift_type == "username" and recipient_username:
-        clean = recipient_username.lstrip("@")[:32]
-        desc = f"Төлем жасалғаннан кейін @{clean} пайдаланушысына {t['label']} Premium сыйлық жіберіледі."
-        invoice_payload = f"gift_{tariff_id}_username:{clean}:{safe_name}"
+def process_image_with_ai(image_bytes):
+    model = GenerativeModel('gemini-3.6-flash')
+    image_part = Part.from_data(
+        data=image_bytes,
+        mime_type="image/jpeg"
+    )
+    prompt = """Сен — қаптама суретінен өнім немесе мекеме атауын дәл анықтайтын мамансың.
+Сенің жалғыз міндетің: суреттегі өнімнің немесе мекеменің БАЗАДАН ІЗДЕУГЕ
+ЖАРАЙТЫН атауын шығарып, JSON форматында қайтару.
+
+═══════════════════════════════════════════
+ҚАДАМ 1 — СУРЕТТІ БАҒАЛА
+═══════════════════════════════════════════
+
+Алдымен суретте не бар екенін анықта:
+
+А) Тамақ өнімінің қаптамасы (шоколад, чипсы, шұжық, сусын, т.б.)
+Б) Мекеменің логотипі, вывескасы немесе сыртқы көрінісі
+В) Тамақтың өзі (дайын тамақ, нан, ет — қаптамасыз)
+Г) Өнім емес (адам, пейзаж, скриншот, т.б.)
+
+═══════════════════════════════════════════
+ҚАДАМ 2 — АТ ШЫҒАРУ ЕРЕЖЕЛЕРІ
+═══════════════════════════════════════════
+
+ЕРЕЖЕ 1 — НЕ ІЗДЕУ КЕРЕК:
+- Бренд атауы (мысалы: "Snickers", "Lays", "KFC", "Mexxi")
+- Өндіруші компания атауы (мысалы: "Ülker", "Lotte", "Rakhat")
+- Мекеменің ресми атауы (мысалы: "Altynbuta", "Paprika")
+- Қоспа коды (мысалы: "E471", "E120") — қаптамада көрінсе
+
+ЕРЕЖЕ 2 — НЕ ЖАЗБАУ КЕРЕК (міндетті түрде алып таста):
+- Өнімнің түрі/категориясы: "шоколад", "чипсы", "сары май", "cookie"
+- Өлшем/салмақ: "200g", "1L", "500ml"
+- Жарнамалық сөздер: "Original", "Classic", "Premium", "New", "Fresh"
+- Компания құқықтық формасы: "ЖШС", "ТОО", "LLC", "Inc", "Co."
+- Дәм сипаттамасы: "сырлы", "шоколадты", "тәтті"
+
+ЕРЕЖЕ 3 — АЛДЫҢҒЫ ПЛАНДЫ ҒАНА АЛ:
+- Суретте бірнеше өнім болса — ТЕК ең үлкен/анық көрінетінін ал
+- Артқы фондағы өнімдерді, жанындағы өнімдерді елеме
+
+ЕРЕЖЕ 4 — АТ ФОРМАТЫ (ӨТЕ МАҢЫЗДЫ):
+- Бренд атауын қаптамадан ДӘЛМЕ-ДӘЛ КӨШІр
+- Кириллмен жазылса → кириллмен жаз: "айс", "АЙС", "Простоквашино"
+- Латынмен жазылса → латынмен жаз: "Snickers", "Lays", "AIS"
+- Кіші әріппен жазылса → кіші әріппен жаз
+- Бас әріппен жазылса → бас әріппен жаз
+- АУДАРМА ЖАСАМА: қаптамада "айс" деп тұрса "AIS" деп жазба!
+- Өндірушіні тек аты анық жазылса ғана қос, болжама жасама
+
+═══════════════════════════════════════════
+ҚАДАМ 3 — JSON ФОРМАТЫ
+═══════════════════════════════════════════
+
+Міндетті түрде ТЕК мынадай JSON форматында жауап бер, басқа ештеңе жазба:
+
+Өнім/мекеме табылса:
+{"product_names": ["БрендАтауы", "ӨндірушіАтауы"]}
+
+Өндіруші анық көрінбесе:
+{"product_names": ["БрендАтауы"]}
+
+Сурет өнім/мекеме емес болса немесе мүлдем оқылмаса:
+{"product_names": []}
+
+═══════════════════════════════════════════
+МЫСАЛДАР
+═══════════════════════════════════════════
+
+Снікерс батончигі ("Snickers" деп жазылған)  → {"product_names": ["Snickers", "Mars"]}
+Ülker печеньесі ("Ülker" деп жазылған)        → {"product_names": ["Ülker"]}
+KFC вывескасы ("KFC" деп жазылған)            → {"product_names": ["KFC"]}
+АЙС айраны ("айс" деп кириллмен жазылған)    → {"product_names": ["айс"]}
+ПРОСТОКВАШИНО ("ПРОСТОКВАШИНО" деп жазылған) → {"product_names": ["ПРОСТОКВАШИНО"]}
+Адамның суреті                                → {"product_names": []}
+Бұлыңғыр сурет                               → {"product_names": []}"""
+
+    try:
+        response = model.generate_content(
+            [prompt, image_part]
+        )
+        result_text = clean_json_string(response.text)
+        return json.loads(result_text)
+    except Exception as e:
+        print(f"[process_image_with_ai] Қате: {e}")
+        return {"product_names": [f"ҚАТЕ_МӘТІНІ: {str(e)}"]}
+
+
+def handle_photo(image_bytes, chat_id, username, lang="kz"):
+    import concurrent.futures
+    import time
+    from translations import t as _t
+    t_start = time.perf_counter()
+
+    # vision_collector импорты — қате болса бот тоқтамайды
+    try:
+        from vision_collector import process_image_for_training, check_violators_db
+        _vision_ok = True
+    except Exception as e:
+        print(f"[handle_photo] vision_collector импорт қате: {e}")
+        _vision_ok = False
+
+    # ── ПРОЦЕСС A — бренд атауын шығару ─────────────────────────────────
+    t_ai = time.perf_counter()
+    ai_result = process_image_with_ai(image_bytes)
+    dt_ai = time.perf_counter() - t_ai
+    print(f"[handle_photo] process_image_with_ai (Vertex AI Gemini) орындалу уақыты: {dt_ai:.3f}с")
+
+    # ── ПРОЦЕСС B — фонда жұмыс жасайды, жауапты күтпейді ───────────────
+    if _vision_ok:
+        try:
+            bg_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            bg_executor.submit(process_image_for_training, image_bytes, chat_id)
+            bg_executor.shutdown(wait=False)
+        except Exception as e:
+            print(f"[handle_photo] Process B қате: {e}")
+
+    # ── ПРОЦЕСС C — өшірулі (Google Cloud Vision API қосылғанда іске қосылады) ──
+    logo_result = {"detected": False, "confidence": 0.0}
+
+    # ── ПРОЦЕСС A нәтижесін өңдеу ────────────────────────────────────────
+    product_names = ai_result.get("product_names", [])
+
+    if not product_names:
+        from translations import t
+        print(f"[handle_photo] Өнім атауы табылмады. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
+        return t("photo_no_name", lang), None, ""
+
+    if "ҚАТЕ_МӘТІНІ:" in product_names[0]:
+        print(f"[handle_photo] Суретті тану кезінде қате орын алды. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
+        return f"❌ <b>Қате:</b> {product_names[0]}", None, ""
+
+    # ── Мәңгілік бан базасын тексеру (іздемес бұрын) ─────────────────────
+    t_viol = time.perf_counter()
+    try:
+        violator_reply = check_violators_db(product_names[0], lang) if _vision_ok else None
+    except Exception as e:
+        print(f"[handle_photo] check_violators_db қате: {e}")
+        violator_reply = None
+    dt_viol = time.perf_counter() - t_viol
+    print(f"[handle_photo] check_violators_db орындалу уақыты: {dt_viol:.3f}с")
+    
+    if violator_reply:
+        print(f"[handle_photo] Өнім қара тізімде. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
+        return violator_reply, None, ""
+
+    t_db = time.perf_counter()
+    all_found_items = []
+    seen_ids = set()
+
+    for name in product_names:
+        if len(name) < 3:
+            continue
+        found = search_data(name)
+        for item in found:
+            if item['id'] not in seen_ids:
+                all_found_items.append(item)
+                seen_ids.add(item['id'])
+        if all_found_items:
+            break
+
+    names_str = ", ".join(product_names)
+    dt_db = time.perf_counter() - t_db
+    print(f"[handle_photo] Мәліметтер базасынан іздеу уақыты: {dt_db:.3f}с")
+
+    if all_found_items:
+        print(f"[handle_photo] Нәтиже табылды! Элемент саны: {len(all_found_items)}. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
+        if len(all_found_items) == 1:
+            text, markup = format_detail_message(all_found_items[0], confidence=all_found_items[0].get('confidence', 'exact'), query_text=product_names[0], lang=lang)
+            from translations import t
+            final_text = t("photo_recognized", lang, name=product_names[0]) + text
+            return final_text, markup, all_found_items[0].get("image_url", "")
+        else:
+            from db_core import save_search_session
+            from handlers_message import _build_search_results_page
+            from translations import t
+
+            session_id = save_search_session(chat_id, all_found_items)
+            header_text = t("photo_recognized_choose", lang, name=product_names[0])
+            reply_text, keyboard = _build_search_results_page(all_found_items, 1, 5,
+                                                              session_id=session_id, lang=lang,
+                                                              header_text=header_text)
+            return reply_text, {"inline_keyboard": keyboard}, ""
+
     else:
-        desc = f"Төлем жасалғаннан кейін сізге {t['label']} Premium сыйлық сілтемесі беріледі."
-        invoice_payload = f"gift_{tariff_id}_link:{safe_name}"
+        original_name = product_names[0] if product_names else ""
+        t_term = time.perf_counter()
+        normalized_name = extract_search_term(original_name) if original_name else None
+        print(f"[handle_photo] extract_search_term (Gemini) орындалу уақыты: {time.perf_counter() - t_term:.3f}с")
+        second_found = []
 
-    payload = {
-        "chat_id": chat_id,
-        "title": f"🎁 Premium Сыйлық — {t['label']}",
-        "description": desc,
-        "payload": invoice_payload,
-        "provider_token": "",
-        "currency": "XTR",
-        "prices": [{"label": f"Premium Сыйлық {t['label']}", "amount": t['stars']}]
-    }
-    if message_thread_id:
-        payload["message_thread_id"] = message_thread_id
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[send_gift_tariff_invoice] Қате: {resp}")
+        if normalized_name:
+            print(f"[handle_photo AI#1] '{original_name}' → '{normalized_name}'")
+            seen_ids = set()
+            found = search_data(normalized_name)
+            for item in found:
+                if item['id'] not in seen_ids:
+                    second_found.append(item)
+                    seen_ids.add(item['id'])
 
+        if second_found:
+            print(f"[handle_photo] Екінші іздеу нәтижесі табылды! Элемент саны: {len(second_found)}. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
+            if len(second_found) == 1:
+                text, markup = format_detail_message(second_found[0], confidence=second_found[0].get('confidence', 'exact'), query_text=original_name, lang=lang)
+                from translations import t
+                final_text = t("photo_recognized", lang, name=original_name) + text
+                return final_text, markup, second_found[0].get("image_url", "")
+            else:
+                from db_core import save_search_session
+                from handlers_message import _build_search_results_page
+                from translations import t
 
-def leave_chat(chat_id):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/leaveChat"
-    payload = {"chat_id": chat_id}
-    resp = requests.post(url, json=payload).json()
-    if not resp.get("ok"):
-        print(f"[leave_chat] Қате: {resp}")
-    return resp.get("ok", False)
+                session_id = save_search_session(chat_id, second_found)
+                header_text = t("photo_recognized_choose", lang, name=original_name)
+                reply_text, keyboard = _build_search_results_page(second_found, 1, 5,
+                                                                  session_id=session_id, lang=lang,
+                                                                  header_text=header_text)
+                return reply_text, {"inline_keyboard": keyboard}, ""
+
+        else:
+            # ── ПРОЦЕСС C (лого детектор) — кейін қосылады ───────────────
+            # Vision API іске қосылғанда: save_to_suspicious + notify_admin
+            not_found_reply = get_not_found_reply(original_name, normalized_name, lang=lang)
+            print(f"[handle_photo] Өнім мүлдем табылмады. Жалпы уақыт: {time.perf_counter() - t_start:.3f}с")
+            return not_found_reply, None, ""

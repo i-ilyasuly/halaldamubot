@@ -11,6 +11,10 @@ sys.modules['google.cloud.vision'] = MagicMock()
 sys.modules['google.cloud.storage'] = MagicMock()
 sys.modules['vertexai'] = MagicMock()
 sys.modules['vertexai.generative_models'] = MagicMock()
+# functions_framework google.cloud.functions-ты импорттайды (ол жоғарыда mock), сондықтан оны да алмастырамыз
+_ff = MagicMock()
+_ff.http = lambda f: f
+sys.modules['functions_framework'] = _ff
 
 # Now we can import the modules to test
 import formatters
@@ -210,6 +214,169 @@ class TestCronCache(unittest.TestCase):
         mock_update.assert_called_once()
         mock_clear.assert_called_once()
         mock_load.assert_called_once()
+
+
+# ════════════════════════════════════════════════════════════════
+# WHATSAPP
+# ════════════════════════════════════════════════════════════════
+
+class TestWhatsAppFormat(unittest.TestCase):
+    def test_html_to_wa_basic(self):
+        from wa_sender import html_to_wa
+        self.assertEqual(html_to_wa("<b>Hani </b>бар"), "*Hani* бар")
+        self.assertEqual(html_to_wa("<i>ескерту</i>"), "_ескерту_")
+        self.assertEqual(html_to_wa("a &amp; b &lt;c&gt;"), "a & b <c>")
+        self.assertEqual(html_to_wa('<tg-time unix="1" format="D">03.12.2026</tg-time>'), "03.12.2026")
+        self.assertEqual(html_to_wa('<a href="https://x.kz">Сайт</a>'), "Сайт (https://x.kz)")
+
+    def test_html_to_wa_blockquote(self):
+        from wa_sender import html_to_wa
+        out = html_to_wa("✅ OK\n<blockquote>🏭 Өндіруші\n📊 Статус</blockquote>")
+        self.assertIn("> 🏭 Өндіруші\n> 📊 Статус", out)
+        self.assertNotIn("<", out)
+
+    def test_html_to_wa_real_detail_message(self):
+        from wa_sender import html_to_wa
+        item = {"type": "Мекеме", "title": "Hani", "status": "Белсенді", "desc": "ЖШС Hani",
+                "date_start": "01.01.2026", "date_end": "01.01.2027", "id": "5",
+                "map_link": "https://maps.google.com/?q=1,2"}
+        text, markup = formatters.format_detail_message(item, lang="kz", tier="free")
+        out = html_to_wa(text)
+        self.assertNotRegex(out, r"<[a-z/]")
+        self.assertIn("01.01.2027", out)
+
+    def test_split_text(self):
+        from wa_sender import _split_text
+        chunks = _split_text(("а" * 3000 + "\n\n") * 3, limit=4096)
+        self.assertTrue(all(len(c) <= 4096 for c in chunks))
+        self.assertEqual(len(chunks), 3)
+
+
+class TestWhatsAppSendRich(unittest.TestCase):
+    def setUp(self):
+        import wa_sender
+        self.wa = wa_sender
+        self.sent = []
+        self._orig = wa_sender._post
+        wa_sender._post = lambda payload, timeout=15: (self.sent.append(payload) or "wamid.X")
+
+    def tearDown(self):
+        self.wa._post = self._orig
+
+    def test_detail_with_two_buttons_and_map(self):
+        markup = {"inline_keyboard": [
+            [{"text": "🗺️ Картадан көру", "url": "https://maps/x"}],
+            [{"text": "👍 Пайдалы", "callback_data": "fb:good:itm:c:1"},
+             {"text": "👎 Қате", "callback_data": "fb:bad:itm:c:1"}]]}
+        self.wa.send_rich("777", "<b>Hani</b> ✅", markup, reply_to="wamid.in")
+        self.assertEqual(len(self.sent), 1)
+        p = self.sent[0]
+        self.assertEqual(p["interactive"]["type"], "button")
+        self.assertIn("https://maps/x", p["interactive"]["body"]["text"])
+        self.assertEqual(p["context"]["message_id"], "wamid.in")
+        ids = [b["reply"]["id"] for b in p["interactive"]["action"]["buttons"]]
+        self.assertEqual(ids, ["fb:good:itm:c:1", "fb:bad:itm:c:1"])
+
+    def test_many_items_become_list(self):
+        kb = [[{"text": f"{i}. «Өте ұзын өнім атауы номер {i}»", "callback_data": f"itm:i:{i}"}] for i in range(5)]
+        kb.append([{"text": "Келесі ➡️", "callback_data": "srch:2:abc"}])
+        self.wa.send_rich("777", "header", {"inline_keyboard": kb}, list_label="Таңдау")
+        p = self.sent[-1]
+        self.assertEqual(p["interactive"]["type"], "list")
+        rows = p["interactive"]["action"]["sections"][0]["rows"]
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(all(len(r["title"]) <= 24 for r in rows))
+
+    def test_single_url_becomes_cta(self):
+        self.wa.send_rich("777", "text", {"inline_keyboard": [[{"text": "🗺️ Карта", "url": "https://m"}]]})
+        self.assertEqual(self.sent[-1]["interactive"]["type"], "cta_url")
+
+    def test_long_text_sent_separately(self):
+        self.wa.send_rich("777", "x" * 2000, {"inline_keyboard": [[{"text": "A", "callback_data": "fb:good:ai"}]]})
+        self.assertEqual(self.sent[0]["type"], "text")
+        self.assertEqual(self.sent[1]["type"], "interactive")
+
+    def test_unsupported_callbacks_filtered(self):
+        markup = {"inline_keyboard": [[{"text": "Buy", "callback_data": "buy_tariff:x"}]]}
+        self.wa.send_rich("777", "t", markup, allowed_prefixes=("itm:",))
+        self.assertEqual(self.sent[-1]["type"], "text")
+
+
+class TestWhatsAppWebhook(unittest.TestCase):
+    def _req(self, method="POST", args=None, body=b"{}", sig=None, json_data=None):
+        r = mock.Mock()
+        r.method = method
+        r.args = args or {}
+        r.headers = {"X-Hub-Signature-256": sig} if sig else {}
+        r.get_data.return_value = body
+        r.get_json.return_value = json_data
+        return r
+
+    def test_verify_challenge(self):
+        import wa_handlers
+        with mock.patch.object(wa_handlers, "WA_VERIFY_TOKEN", "tok"):
+            req = self._req("GET", {"hub.mode": "subscribe", "hub.verify_token": "tok", "hub.challenge": "42"})
+            self.assertEqual(wa_handlers.handle_whatsapp_request(req), ("42", 200))
+            req = self._req("GET", {"hub.mode": "subscribe", "hub.verify_token": "bad", "hub.challenge": "42"})
+            self.assertEqual(wa_handlers.handle_whatsapp_request(req)[1], 403)
+
+    def test_signature_checked(self):
+        import hmac, hashlib, wa_handlers
+        body = b'{"object":"whatsapp_business_account","entry":[]}'
+        good = "sha256=" + hmac.new(b"sec", body, hashlib.sha256).hexdigest()
+        with mock.patch.object(wa_handlers, "WA_APP_SECRET", "sec"), \
+             mock.patch.object(wa_handlers, "WA_ACCESS_TOKEN", "t"), \
+             mock.patch.object(wa_handlers, "WA_PHONE_NUMBER_ID", "1"), \
+             mock.patch.object(wa_handlers, "process_payload") as pp:
+            self.assertEqual(wa_handlers.handle_whatsapp_request(self._req(body=body, sig="sha256=00"))[1], 403)
+            pp.assert_not_called()
+            self.assertEqual(wa_handlers.handle_whatsapp_request(
+                self._req(body=body, sig=good, json_data={"object": "x"}))[1], 200)
+            pp.assert_called_once()
+
+    def test_main_routes_meta_requests(self):
+        import main
+        with mock.patch("wa_handlers.handle_whatsapp_request", return_value=("ok", 200)) as h:
+            req = self._req("GET", {"hub.mode": "subscribe"})
+            self.assertEqual(main.telegram_webhook(req), ("ok", 200))
+            h.assert_called_once()
+
+    def test_text_message_runs_search(self):
+        import wa_handlers
+        payload = {"object": "whatsapp_business_account", "entry": [{"changes": [{"value": {
+            "contacts": [{"wa_id": "77010000000", "profile": {"name": "Айбек"}}],
+            "messages": [{"from": "77010000000", "id": "wamid.T1", "type": "text", "text": {"body": "Hani"}}]}}]}]}
+        item = {"type": "Мекеме", "title": "Hani", "status": "Белсенді", "desc": "", "id": "9"}
+        with mock.patch.object(wa_handlers, "_get_user_data", return_value={"language": "kz"}), \
+             mock.patch.object(wa_handlers, "check_access", return_value=(True, "premium")), \
+             mock.patch.object(wa_handlers, "search_data", return_value=[item]), \
+             mock.patch("classifier.should_classify", return_value=False), \
+             mock.patch.object(wa_handlers, "increment_usage"), \
+             mock.patch.object(wa_handlers, "log_to_bigquery"), \
+             mock.patch.object(wa_handlers, "save_chat_history"), \
+             mock.patch.object(wa_handlers.wa, "mark_read"), \
+             mock.patch.object(wa_handlers.wa, "send_reaction") as react, \
+             mock.patch.object(wa_handlers.wa, "send_rich") as rich:
+            wa_handlers._PROCESSED.clear()
+            wa_handlers.process_payload(payload)
+            wa_handlers.process_payload(payload)   # дубликат — қайта өңделмеуі керек
+            self.assertEqual(rich.call_count, 1)
+            self.assertEqual(rich.call_args[0][0], "77010000000")
+            self.assertIn("Hani", rich.call_args[0][1])
+            react.assert_called_once_with("77010000000", "wamid.T1", "✅")
+
+    def test_reply_lang_sets_language(self):
+        import wa_handlers
+        msg = {"from": "7701", "id": "wamid.L", "type": "interactive",
+               "interactive": {"type": "button_reply", "button_reply": {"id": "lang:ru", "title": "RU"}}}
+        with mock.patch.object(wa_handlers, "_get_user_data", return_value={"language": "kz"}), \
+             mock.patch.object(wa_handlers, "set_user_language") as setl, \
+             mock.patch.object(wa_handlers.wa, "mark_read"), \
+             mock.patch.object(wa_handlers.wa, "send_text") as st, \
+             mock.patch.object(wa_handlers.wa, "send_location_request"):
+            wa_handlers.handle_message(msg, "Аня")
+            setl.assert_called_once_with("wa_7701", "ru")
+            self.assertIn("Русский", st.call_args_list[0][0][1])
 
 
 if __name__ == '__main__':
